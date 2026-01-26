@@ -1,6 +1,5 @@
 """Chat session and message endpoints."""
 import json
-import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -25,7 +24,6 @@ from app.schemas.user_message import (
     UserMessageCreate,
 )
 
-logger = logging.getLogger("app.user_messages")
 
 router = APIRouter()
 

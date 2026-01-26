@@ -1,5 +1,4 @@
 """User room relationship endpoints."""
-import logging
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,7 +11,6 @@ from app.models.user import User as UserModel
 from app.schemas.user_room import UserRoom as UserRoomSchema
 from app.schemas.user_room import UserRoomResponse
 
-logger = logging.getLogger("app.user_room")
 
 router = APIRouter()
 

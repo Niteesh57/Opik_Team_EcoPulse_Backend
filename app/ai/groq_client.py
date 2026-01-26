@@ -1,5 +1,5 @@
 """Utilities for interacting with Groq chat models."""
-import logging
+
 from functools import lru_cache
 from typing import Iterable
 
@@ -7,8 +7,6 @@ from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
 from app.core.config import settings
-
-logger = logging.getLogger("app.ai.groq")
 
 SYSTEM_PROMPT = (
     "You are the virtual concierge for OPIK. Provide concise, helpful and friendly "

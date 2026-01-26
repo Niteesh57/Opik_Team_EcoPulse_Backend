@@ -1,5 +1,4 @@
 """Room management endpoints."""
-import logging
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,7 +16,6 @@ from app.crud import user_room as user_room_crud
 from app.dependencies import get_current_superuser, get_current_active_user
 from app.models.user import User as UserModel
 
-logger = logging.getLogger("app.rooms")
 
 router = APIRouter()
 

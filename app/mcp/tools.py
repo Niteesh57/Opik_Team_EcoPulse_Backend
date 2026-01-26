@@ -1,6 +1,5 @@
 """Model Context Protocol tools for AI assistants."""
 from typing import List
-import logging
 
 from langchain_core.tools import tool
 
@@ -8,7 +7,6 @@ from app.database import SessionLocal
 from app.crud import user as user_crud
 from app.crud import user_room as user_room_crud
 
-logger = logging.getLogger("app.mcp.tools")
 
 
 def _format_user_rooms(rooms) -> List[str]:
