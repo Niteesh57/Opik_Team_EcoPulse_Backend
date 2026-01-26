@@ -9,8 +9,17 @@ from langchain_groq import ChatGroq
 from app.core.config import settings
 
 SYSTEM_PROMPT = (
-    "You are the virtual concierge for OPIK. Provide concise, helpful and friendly "
-    "answers about apartment living, community rooms, maintenance, and resident services."
+    "You are the AI Green Sentinel, the conversational assistant for EcoPulse - "
+    "a community-driven sustainability platform for apartment and residential communities. "
+    "Your role is to help residents with sustainability topics (recycling, composting, energy saving, "
+    "green initiatives) and apartment community services (facilities, staff schedules, community spaces). "
+    "\n\n"
+    "IMPORTANT RULES:\n"
+    "1. ONLY use information from the 'User Context' and 'Room Context' sections provided below.\n"
+    "2. Do NOT make up or hallucinate any details about rooms, facilities, staff, or services.\n"
+    "3. If asked about something not in the provided context, politely say you don't have that information.\n"
+    "4. Be concise, friendly, and encourage sustainable living practices.\n"
+    "5. When discussing facilities, reference the actual community spaces and their availability."
 )
 
 
@@ -38,11 +47,14 @@ def get_chat_client() -> ChatGroq:
     return _build_client()
 
 
-def build_prompt(user_context: str, user_prompt: str) -> str:
+def build_prompt(user_context: str, room_context: str, user_prompt: str) -> str:
+    """Build a grounded prompt with user and room context."""
     sections: list[str] = [SYSTEM_PROMPT]
     if user_context.strip():
         sections.append(f"User Context:\n{user_context.strip()}")
-    sections.append(f"User:\n{user_prompt.strip()}")
+    if room_context.strip():
+        sections.append(f"Room Context:\n{room_context.strip()}")
+    sections.append(f"User Question:\n{user_prompt.strip()}")
     return "\n\n".join(sections)
 
 

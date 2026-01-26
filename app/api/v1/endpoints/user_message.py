@@ -16,7 +16,7 @@ from app.crud import user_message as user_message_crud
 from app.database import get_db
 from app.dependencies import get_current_active_user
 from app.models.user import User as UserModel
-from app.mcp.tools import build_user_context
+from app.mcp.tools import build_user_context, build_all_rooms_context
 from app.schemas.user_message import (
     MessageSession,
     MessageSessionCreate,
@@ -293,7 +293,8 @@ async def stream_chat(
     message_id_value = message.id
     user_id_value = current_user.id
     user_context_text = build_user_context(user_id_value)
-    prompt_with_context = build_prompt(user_context_text, prompt_text)
+    room_context_text = build_all_rooms_context()
+    prompt_with_context = build_prompt(user_context_text, room_context_text, prompt_text)
 
     try:
         groq_stream = stream_chat_completion(prompt_with_context)
