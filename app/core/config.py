@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Database
-    DATABASE_URL: str = "sqlite:///./opik.db"
+    DATABASE_URL: str = "sqlite:////tmp/opik.db"
     
     # CORS
     BACKEND_CORS_ORIGINS: list = ["*"]
