@@ -12,17 +12,22 @@ from app.api.v1.api import api_router
 from app.core.config import settings
 from app.database import init_db
 
-# Ensure log directory exists for rotating handler output
-os.makedirs("logs", exist_ok=True)
+# Detect serverless environment (Vercel uses read-only filesystem)
+IS_SERVERLESS = os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
 
-# Configure structured logging once so app routes inherit handlers
+# Configure structured logging; skip file handler on serverless (read-only FS)
+log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+
+if not IS_SERVERLESS:
+    os.makedirs("logs", exist_ok=True)
+    log_handlers.append(
+        RotatingFileHandler("logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=5)
+    )
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        RotatingFileHandler("logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=5)
-    ],
+    handlers=log_handlers,
 )
 
 logger = logging.getLogger("app.main")
