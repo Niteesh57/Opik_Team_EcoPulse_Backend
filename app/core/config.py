@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Database
-    DATABASE_URL: str = "sqlite:////tmp/opik.db"
+    DATABASE_URL: str = "postgresql://neondb_owner:npg_yFP0mE9xcitg@ep-damp-band-ah1lndo4-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require"
     
     # CORS
     BACKEND_CORS_ORIGINS: list = ["*"]
