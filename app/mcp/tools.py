@@ -23,7 +23,6 @@ def build_user_context(user_id: int) -> str:
 	with SessionLocal() as db:
 		user = user_crud.get_user_by_id(db, user_id)
 		if not user:
-			logger.warning("User %s not found when building context", user_id)
 			return "User not found."
 
 		rooms = user_room_crud.get_user_rooms(db, user_id=user_id)

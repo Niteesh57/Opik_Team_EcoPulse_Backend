@@ -23,7 +23,6 @@ def _build_client() -> ChatGroq:
     if not settings.GROQ_API_KEY:
         raise GroqConfigurationError("GROQ_API_KEY is not configured")
 
-    logger.info("Initializing Groq chat client using model openai/gpt-oss-120b")
     return ChatGroq(
         groq_api_key=settings.GROQ_API_KEY,
         model="openai/gpt-oss-120b",

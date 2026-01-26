@@ -99,14 +99,12 @@ async def create_session(
             detail="Message content is empty",
         )
 
-    logger.info("Creating chat session for user %s", current_user.id)
     session_payload = MessageSessionCreate(
         user_id=current_user.id,
         first_user_message=first_message,
     )
     session = user_message_crud.create_session(db, session_payload)
     if session is None:
-        logger.error("Failed to create chat session for user %s", current_user.id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unable to create session",
@@ -153,7 +151,6 @@ async def create_message(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Message content is empty",
         )
-    logger.info("Stored message %s for session %s", message.id, payload.session_id)
     return message
 
 
@@ -238,7 +235,6 @@ async def update_feedback(
         )
 
     updated = user_message_crud.set_feedback(db, message_id, payload.liked, payload.disliked)
-    logger.info("Updated feedback for message %s", message_id)
     return updated
 
 
@@ -329,7 +325,6 @@ async def stream_chat(
                 ai_chunks.append(token)
                 yield format_sse_payload({"delta": token})
         except Exception as exc:  # pylint: disable=broad-except
-            logger.exception("Groq streaming failed for session %s", session_id_value)
             yield format_sse_payload({"error": str(exc)})
             return
         else:

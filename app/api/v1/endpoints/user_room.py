@@ -44,9 +44,6 @@ async def check_user_room(
 
     room = user_room.room
     if not room:
-        logger.warning(
-            "User %s has membership without room %s present", current_user.id, user_room.room_id
-        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Room not found",
