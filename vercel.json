@@ -14,12 +14,5 @@
       "src": "/(.*)",
       "dest": "app/main.py"
     }
-  ],
-  "redirects": [
-    {
-      "source": "/",
-      "destination": "https://opik-team-eco-pulse-backend.vercel.app/",
-      "permanent": false
-    }
   ]
 }
