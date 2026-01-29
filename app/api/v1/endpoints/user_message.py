@@ -1,5 +1,6 @@
 """Chat session and message endpoints."""
 import json
+import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -9,14 +10,15 @@ from sqlalchemy.orm import Session
 
 from app.ai.groq_client import (
     GroqConfigurationError,
-    build_prompt,
-    stream_chat_completion,
+    get_connection_pool,
+    compile_react_agent_with_persistence,
+    create_initial_messages,
+    ChatRequest,
 )
 from app.crud import user_message as user_message_crud
 from app.database import get_db
 from app.dependencies import get_current_active_user
 from app.models.user import User as UserModel
-from app.mcp.tools import build_user_context, build_all_rooms_context
 from app.schemas.user_message import (
     MessageSession,
     MessageSessionCreate,
@@ -238,24 +240,31 @@ async def update_feedback(
     return updated
 
 
+
 @router.post("/stream", response_class=StreamingResponse)
 async def stream_chat(
-    payload: ChatStreamRequest,
+    payload: ChatRequest,
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Stream Groq model responses as Server-Sent Events."""
-    prompt_text = _clean_text(payload.prompt)
+    """Stream LangGraph agent responses as Server-Sent Events with tool calling."""
+    prompt_text = _clean_text(payload.message)
     if not prompt_text:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Message content is empty",
         )
 
+    # Determine or create thread_id
+    thread_id = payload.thread_id or str(uuid.uuid4())
+    user_id_str = str(current_user.id)
+
+    # Persist user message in our DB
     session = None
     created_session = False
-    if payload.session_id:
-        session = user_message_crud.get_session(db, payload.session_id)
+
+    if payload.thread_id:
+        session = user_message_crud.get_session(db, payload.thread_id)
         if not session or session.user_id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -272,8 +281,10 @@ async def stream_chat(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Unable to create session",
             )
+        thread_id = session.session_id
         created_session = True
 
+    # Store user message
     message = user_message_crud.create_user_message(
         db,
         UserMessageCreate(
@@ -291,63 +302,152 @@ async def stream_chat(
 
     session_id_value = session.session_id
     message_id_value = message.id
-    user_id_value = current_user.id
-    user_context_text = build_user_context(user_id_value)
-    room_context_text = build_all_rooms_context()
-    prompt_with_context = build_prompt(user_context_text, room_context_text, prompt_text)
-
-    try:
-        groq_stream = stream_chat_completion(prompt_with_context)
-    except GroqConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
+    current_user_id = current_user.id
 
     def event_stream():
         ai_chunks: list[str] = []
         assistant_message_id: Optional[int] = None
+        current_step: Optional[str] = None
 
-        yield format_sse_payload(
-            {
-                "event": "session",
-                "session_id": session_id_value,
-                "message_id": message_id_value,
-                "created_session": created_session,
-            }
-        )
+        # 1. Send Initial Session Info
+        yield format_sse_payload({
+            "event": "session",
+            "session_id": session_id_value,
+            "message_id": message_id_value,
+            "thread_id": thread_id,
+            "created_session": created_session,
+        })
 
         try:
-            for chunk in groq_stream:
-                token = _extract_chunk_text(chunk)
-                if not token:
-                    continue
+            pool = get_connection_pool()
+            with pool.connection() as conn:
+                agent, store = compile_react_agent_with_persistence(conn)
 
-                ai_chunks.append(token)
-                yield format_sse_payload({"delta": token})
-        except Exception as exc:  # pylint: disable=broad-except
+                config = {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "user_id": user_id_str,
+                    }
+                }
+
+                initial_messages = create_initial_messages(prompt_text)
+                tool_descriptions = {
+                    "get_user_context": "Fetching user profile",
+                    "get_community_context": "Loading community details",
+                    "get_all_communities_context": "Retrieving all communities",
+                    "save_memory": "Saving to memory",
+                    "remove_memory": "Removing from memory",
+                    "list_memories": "Reading memories",
+                }
+
+                # Track what we've already sent to compute deltas
+                sent_content_length = 0
+                seen_tool_calls = set()
+                seen_tool_results = set()
+
+                # stream_mode="values" yields full state snapshots
+                for state in agent.stream(
+                    {"messages": initial_messages},
+                    config,
+                    stream_mode="values",
+                ):
+                    messages = state.get("messages", [])
+                    if not messages:
+                        continue
+
+                    # Process each message in the state
+                    for msg in messages:
+                        msg_type = getattr(msg, "type", "")
+                        msg_id = getattr(msg, "id", id(msg))
+
+                        # Handle tool calls from AI messages
+                        tool_calls = getattr(msg, "tool_calls", None)
+                        if tool_calls:
+                            for tc in tool_calls:
+                                tc_id = tc.get("id") or tc.get("name", "")
+                                if tc_id in seen_tool_calls:
+                                    continue
+                                seen_tool_calls.add(tc_id)
+
+                                if current_step != "reasoning":
+                                    yield format_sse_payload({
+                                        "event": "status",
+                                        "status": "reasoning",
+                                        "message": "Analyzing your request...",
+                                    })
+                                    current_step = "reasoning"
+
+                                yield format_sse_payload({
+                                    "event": "tool_start",
+                                    "tool": tc.get("name"),
+                                    "description": tool_descriptions.get(tc.get("name"), "Executing tool"),
+                                    "args": tc.get("args"),
+                                })
+                                current_step = "tool"
+
+                        # Handle tool result messages
+                        if msg_type == "tool":
+                            tool_call_id = getattr(msg, "tool_call_id", msg_id)
+                            if tool_call_id in seen_tool_results:
+                                continue
+                            seen_tool_results.add(tool_call_id)
+
+                            preview = str(getattr(msg, "content", ""))[:200]
+                            yield format_sse_payload({
+                                "event": "tool_end",
+                                "tool": getattr(msg, "name", "tool"),
+                                "result_preview": preview,
+                            })
+                            continue
+
+                    # Get final AI message content for streaming
+                    last_msg = messages[-1]
+                    if getattr(last_msg, "type", "") == "ai" and not getattr(last_msg, "tool_calls", None):
+                        content = getattr(last_msg, "content", "")
+                        if isinstance(content, list):
+                            content = "".join(
+                                c.get("text", "") if isinstance(c, dict) else str(c)
+                                for c in content
+                            )
+
+                        if content and len(content) > sent_content_length:
+                            if current_step != "writing":
+                                yield format_sse_payload({
+                                    "event": "status",
+                                    "status": "writing",
+                                    "message": "Writing answer...",
+                                })
+                                current_step = "writing"
+
+                            # Send only the new portion
+                            delta = content[sent_content_length:]
+                            sent_content_length = len(content)
+                            ai_chunks.append(delta)
+                            yield format_sse_payload({"delta": delta})
+
+        except Exception as exc:
             yield format_sse_payload({"error": str(exc)})
             return
-        else:
-            ai_message = "".join(ai_chunks).strip()
-            if ai_message:
-                assistant_message = user_message_crud.create_user_message(
-                    db,
-                    UserMessageCreate(
-                        session_id=session_id_value,
-                        role="assistant",
-                        user_id=user_id_value,
-                        ai_message=ai_message,
-                    ),
-                )
-                assistant_message_id = assistant_message.id if assistant_message else None
-            yield format_sse_payload(
-                {
-                    "event": "end",
-                    "session_id": session_id_value,
-                    "message_id": message_id_value,
-                    "assistant_message_id": assistant_message_id,
-                }
+
+        # 3. Finalize and Store
+        ai_message = "".join(ai_chunks).strip()
+        if ai_message:
+            assistant_msg = user_message_crud.create_user_message(
+                db,
+                UserMessageCreate(
+                    session_id=session_id_value,
+                    role="assistant",
+                    user_id=current_user_id,
+                    ai_message=ai_message,
+                ),
             )
+            assistant_message_id = assistant_msg.id if assistant_msg else None
+
+        yield format_sse_payload({
+            "event": "end",
+            "session_id": session_id_value,
+            "message_id": message_id_value,
+            "assistant_message_id": assistant_message_id,
+        })
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
