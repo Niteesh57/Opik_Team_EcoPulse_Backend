@@ -52,13 +52,13 @@ class ConnectionManager:
             
             for websocket, user in self.active_connections[event_id]:
                 try:
+                    print(user.lang)
                     # Translate message if user has a preferred language
                     user_lang = getattr(user, 'lang', None) or 'en'
                     translated_text = original_text
-                    
                     if user_lang and user_lang != 'en':
                         try:
-                            translation = translator.translate(original_text, dest=user_lang)
+                            translation = await translator.translate(original_text, dest=user_lang)
                             translated_text = translation.text
                         except Exception as translate_err:
                             print(f"Translation error: {translate_err}")
@@ -199,7 +199,7 @@ async def websocket_endpoint(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await manager.connect(websocket, event_id)
+    await manager.connect(websocket, event_id, user)
     
     try:
         while True:
@@ -295,7 +295,7 @@ def post_event_message(
 
 
 @router.get("/{event_id}", response_model=List[EventMessageOut])
-def list_event_messages(
+async def list_event_messages(
     event_id: str,
     skip: int = 0,
     limit: int = 50,
@@ -311,13 +311,26 @@ def list_event_messages(
         
     messages = event_message_crud.get_event_messages(db, event_id=event.id, skip=skip, limit=limit)
     
-    # Enrich with user details
+    # Get user's preferred language
+    user_lang = getattr(current_user, 'lang', None) or 'en'
+    
+    # Enrich with user details and translate messages
     results = []
     for msg in messages:
         try:
             msg_out = EventMessageOut.from_orm(msg)
             msg_out.username = msg.user.username
             msg_out.full_name = msg.user.full_name
+            
+            # Translate message if user has a preferred language other than English
+            if user_lang and user_lang != 'en':
+                try:
+                    translation = await translator.translate(msg.message, dest=user_lang)
+                    msg_out.message = translation.text
+                except Exception as translate_err:
+                    print(f"Translation error: {translate_err}")
+                    # Fall back to original message
+            
             results.append(msg_out)
         except Exception:
             continue
