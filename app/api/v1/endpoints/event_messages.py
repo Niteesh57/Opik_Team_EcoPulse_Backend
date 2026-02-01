@@ -15,38 +15,61 @@ from app.crud import event_user as event_user_crud
 from app.schemas.event_message import EventMessageCreate, EventMessageOut
 from app.dependencies import get_current_active_user
 from app.models.user import User
+from googletrans import Translator
+
+translator = Translator()
 
 router = APIRouter(prefix="/messages", tags=["event-messages"])
 
 
 class ConnectionManager:
     def __init__(self):
-        # Map event_id to a list of active WebSocket connections
-        self.active_connections: Dict[str, List[WebSocket]] = {}
+        # Map event_id to a list of (WebSocket, User) tuples
+        self.active_connections: Dict[str, List[tuple]] = {}
 
-    async def connect(self, websocket: WebSocket, event_id: str):
+    async def connect(self, websocket: WebSocket, event_id: str, user: User):
         await websocket.accept()
         if event_id not in self.active_connections:
             self.active_connections[event_id] = []
-        self.active_connections[event_id].append(websocket)
+        self.active_connections[event_id].append((websocket, user))
 
     def disconnect(self, websocket: WebSocket, event_id: str):
         if event_id in self.active_connections:
-            if websocket in self.active_connections[event_id]:
-                self.active_connections[event_id].remove(websocket)
+            self.active_connections[event_id] = [
+                (ws, u) for ws, u in self.active_connections[event_id] if ws != websocket
+            ]
             if not self.active_connections[event_id]:
                 del self.active_connections[event_id]
 
     async def broadcast(self, message: dict, event_id: str):
+        """Broadcast message to all connections, translating to each user's language."""
         if event_id in self.active_connections:
             # Convert datetime objects to string for JSON serialization
             if "created_at" in message and isinstance(message["created_at"], datetime):
                 message["created_at"] = message["created_at"].isoformat()
-                
-            json_msg = json.dumps(message)
-            for connection in self.active_connections[event_id]:
+            
+            original_text = message.get("message", "")
+            
+            for websocket, user in self.active_connections[event_id]:
                 try:
-                    await connection.send_text(json_msg)
+                    # Translate message if user has a preferred language
+                    user_lang = getattr(user, 'lang', None) or 'en'
+                    translated_text = original_text
+                    
+                    if user_lang and user_lang != 'en':
+                        try:
+                            translation = translator.translate(original_text, dest=user_lang)
+                            translated_text = translation.text
+                        except Exception as translate_err:
+                            print(f"Translation error: {translate_err}")
+                            # Fall back to original text
+                    
+                    # Create a copy of the message with translated text
+                    user_message = message.copy()
+                    user_message["message"] = translated_text
+                    
+                    json_msg = json.dumps(user_message)
+                    await websocket.send_text(json_msg)
                 except Exception:
                     # Handle broken connections gracefully
                     pass

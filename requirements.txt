@@ -19,6 +19,7 @@ langgraph>=0.2.0
 langgraph-checkpoint>=2.0.0
 langgraph-checkpoint-postgres>=2.0.12
 tavily-python>=0.2.0
+googletrans==4.0.2
 
 # Database
 psycopg2-binary>=2.9.9
