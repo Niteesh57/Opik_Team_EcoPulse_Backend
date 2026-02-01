@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     GROQ_API_KEY: Optional[str] = None
+    TAVILY_API_KEY: Optional[str] = None
+    DEAPI_TOKEN: Optional[str] = None
+    IMGBB_API_KEY: Optional[str] = None
     
     class Config:
         env_file = ".env"

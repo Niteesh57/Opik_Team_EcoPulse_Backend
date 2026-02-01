@@ -68,6 +68,44 @@ def _clean_text(value: Optional[str]) -> Optional[str]:
     return stripped if stripped else None
 
 
+def _sanitize_response(text: str) -> str:
+    """Sanitize LLM response to remove garbage characters and artifacts.
+    
+    Filters out:
+    - Zero-width spaces and invisible Unicode characters
+    - Excessive repetitive patterns (like "..." repeated many times)
+    - Excessive newlines
+    """
+    import re
+    
+    if not text:
+        return text
+    
+    # Remove zero-width spaces and other invisible Unicode characters
+    # U+200B (zero-width space), U+200C, U+200D, U+FEFF, etc.
+    invisible_chars = r'[\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0]+'
+    text = re.sub(invisible_chars, '', text)
+    
+    # Remove excessive dots (more than 3 consecutive)
+    text = re.sub(r'\.{4,}', '...', text)
+    
+    # Remove lines that are just dots, spaces, or ellipses
+    text = re.sub(r'^[\.\s…]+$', '', text, flags=re.MULTILINE)
+    
+    # Collapse excessive newlines (more than 2) into 2
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    # Remove trailing garbage (lines with only dots/spaces at the end)
+    text = re.sub(r'(\n[\.\s…]+)+$', '', text)
+    
+    # If the response is mostly dots/garbage, return a fallback
+    clean_chars = re.sub(r'[\.\s…\n]', '', text)
+    if len(clean_chars) < 10 and len(text) > 50:
+        return ""  # Response is mostly garbage, return empty
+    
+    return text.strip()
+
+
 def _extract_chunk_text(chunk: object) -> str:
     """Best-effort extraction of text from LangChain streaming chunks."""
     candidate = getattr(chunk, "content", None)
@@ -321,7 +359,7 @@ async def stream_chat(
         try:
             pool = get_connection_pool()
             with pool.connection() as conn:
-                agent, store = compile_react_agent_with_persistence(conn)
+                agent, store = compile_react_agent_with_persistence(conn, user_id=current_user.id)
 
                 config = {
                     "configurable": {
@@ -338,6 +376,8 @@ async def stream_chat(
                     "save_memory": "Saving to memory",
                     "remove_memory": "Removing from memory",
                     "list_memories": "Reading memories",
+                    "create_event_via_llm": "Creating event in database",
+                    "start_event_creation": "Starting event creation workflow",
                 }
 
                 # Track what we've already sent to compute deltas
@@ -346,11 +386,13 @@ async def stream_chat(
                 seen_tool_results = set()
 
                 # stream_mode="values" yields full state snapshots
+                last_state = None
                 for state in agent.stream(
                     {"messages": initial_messages},
                     config,
                     stream_mode="values",
                 ):
+                    last_state = state  # Keep track of the last state
                     messages = state.get("messages", [])
                     if not messages:
                         continue
@@ -410,6 +452,44 @@ async def stream_chat(
                                 for c in content
                             )
 
+                        # Detect whether the sub-agent is asking for a human input (interrupt)
+                        lower = (content or "").lower()
+                        expected = None
+                        if "does this description look good" in lower or "does this look good" in lower:
+                            expected = "description_feedback"
+                        elif "where will the event take place" in lower:
+                            expected = "event_place"
+                        elif "when is the event scheduled" in lower or "when is the event" in lower:
+                            expected = "event_date"
+                        elif "what type of event is this" in lower:
+                            expected = "event_type"
+
+                        if expected:
+                            # Persist the assistant question so it's in the chat history
+                            try:
+                                assistant_msg = user_message_crud.create_user_message(
+                                    db,
+                                    UserMessageCreate(
+                                        session_id=session_id_value,
+                                        role="assistant",
+                                        user_id=current_user_id,
+                                        ai_message=content,
+                                    ),
+                                )
+                            except Exception:
+                                assistant_msg = None
+
+                            # Notify client to submit user input for the expected field
+                            yield format_sse_payload({
+                                "event": "wait_for_user",
+                                "expected": expected,
+                                "question": content,
+                                "session_id": session_id_value,
+                            })
+
+                            # Stop streaming—frontend should submit user's reply as a new /stream call with the same thread_id
+                            return
+
                         if content and len(content) > sent_content_length:
                             if current_step != "writing":
                                 yield format_sse_payload({
@@ -421,16 +501,76 @@ async def stream_chat(
 
                             # Send only the new portion
                             delta = content[sent_content_length:]
+                            delta = _sanitize_response(delta)  # Sanitize to remove garbage
                             sent_content_length = len(content)
-                            ai_chunks.append(delta)
-                            yield format_sse_payload({"delta": delta})
+                            if delta:  # Only send if there's content after sanitization
+                                ai_chunks.append(delta)
+                                yield format_sse_payload({"delta": delta})
+                
+                # After streaming completes, check if we're at an interrupt point
+                # This handles cases where the subgraph interrupted but we didn't detect it via text patterns
+                try:
+                    snapshot = agent.get_state(config)
+                    if snapshot and snapshot.next:
+                        # If there are next nodes, the graph is interrupted and waiting
+                        # Get the last AI message to send to the user
+                        if last_state and last_state.get("messages"):
+                            last_ai_msg = None
+                            for msg in reversed(last_state["messages"]):
+                                if getattr(msg, "type", "") == "ai":
+                                    last_ai_msg = msg
+                                    break
+                            
+                            if last_ai_msg:
+                                content = getattr(last_ai_msg, "content", "")
+                                if isinstance(content, list):
+                                    content = "".join(
+                                        c.get("text", "") if isinstance(c, dict) else str(c)
+                                        for c in content
+                                    )
+                                
+                                # Check if we need to send this content as a delta
+                                already_sent = content in "".join(ai_chunks)
+                                
+                                # Persist the assistant question
+                                try:
+                                    assistant_msg = user_message_crud.create_user_message(
+                                        db,
+                                        UserMessageCreate(
+                                            session_id=session_id_value,
+                                            role="assistant",
+                                            user_id=current_user_id,
+                                            ai_message=content,
+                                        ),
+                                    )
+                                except Exception:
+                                    pass
+                                
+                                # Send the AI message as delta if not already sent
+                                if content and not already_sent:
+                                    sanitized = _sanitize_response(content)
+                                    if sanitized:
+                                        ai_chunks.append(sanitized)
+                                        yield format_sse_payload({"delta": sanitized})
+                                
+                                # Notify that we're waiting for user input
+                                yield format_sse_payload({
+                                    "event": "wait_for_user",
+                                    "expected": "user_response",
+                                    "question": content,
+                                    "session_id": session_id_value,
+                                })
+                                return
+                except Exception:
+                    # If we can't get state, just continue with normal completion
+                    pass
 
         except Exception as exc:
             yield format_sse_payload({"error": str(exc)})
             return
 
         # 3. Finalize and Store
-        ai_message = "".join(ai_chunks).strip()
+        ai_message = _sanitize_response("".join(ai_chunks).strip())
         if ai_message:
             assistant_msg = user_message_crud.create_user_message(
                 db,
