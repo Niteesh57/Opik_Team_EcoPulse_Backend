@@ -36,7 +36,7 @@ class EventAgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     event_name: Optional[str]
     description: Optional[str]
-    desc_iterations: int
+    desc_iterations: Optional[int]
     place: Optional[str]
     date: Optional[str]
     start_time: Optional[str]

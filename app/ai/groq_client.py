@@ -258,6 +258,8 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = None
     message: str
 
+    model_config = {"arbitrary_types_allowed": True}
+
 
 # --- Helpers ---
 def create_initial_messages(user_message: str) -> list:
