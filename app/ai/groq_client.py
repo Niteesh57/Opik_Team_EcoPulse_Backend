@@ -12,6 +12,8 @@ from langgraph.prebuilt import ToolNode
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel
 from langsmith import Client
+from opik import track
+import opik
 
 client = Client()
 prompt = client.pull_prompt("hwchase17/react")
@@ -20,6 +22,7 @@ from app.core.config import settings
 from app.mcp.tools import APItools
 from app.mcp.memory import MemoryTools
 from app.ai.event_agent import build_event_subgraph, EventAgentState
+from app.ai.opik import opik_tracer
 
 # System prompt for AI Green Sentinel
 SYSTEM_PROMPT = (
@@ -80,6 +83,7 @@ def _build_llm() -> ChatGroq:
         temperature=0.1,
         max_tokens=1024,
         max_retries=2,
+        callbacks=[opik_tracer],
     )
 
 
@@ -96,7 +100,7 @@ ALL_TOOLS = APItools + MemoryTools
 class AgentState(EventAgentState):
     # Inherit from EventAgentState so we have all fields
     # messages is already in EventAgentState
-    pass
+    thread_id: Optional[str]
 
 
 def compile_react_agent_with_persistence(conn, user_id=None):
@@ -145,6 +149,7 @@ def compile_react_agent_with_persistence(conn, user_id=None):
 
     model = get_chat_llm().bind_tools(ALL_TOOLS)
 
+    @opik.track(name="Groq React Agent Call")
     def call_model(state: AgentState):
         messages = state["messages"]
         if not messages or not isinstance(messages[0], SystemMessage):
@@ -163,7 +168,16 @@ def compile_react_agent_with_persistence(conn, user_id=None):
             else:
                 full_messages = [SystemMessage(content=dynamic_system_prompt)] + messages
 
-        response = model.invoke(full_messages)
+        metadata = {}
+        thread_id = state.get("thread_id")
+        if thread_id:
+            metadata["thread_id"] = thread_id
+
+        invoke_config = {"callbacks": [opik_tracer]}
+        if metadata:
+            invoke_config["metadata"] = metadata
+
+        response = model.invoke(full_messages, config=invoke_config)
         return {"messages": [response]}
 
     def route_step(state: AgentState):

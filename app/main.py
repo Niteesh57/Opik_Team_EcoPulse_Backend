@@ -8,14 +8,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.database import init_db
+import os
+import opik
 
+os.environ["OPIK_API_KEY"] = settings.OPIK_API_KEY or ""
+os.environ["OPIK_URL_OVERRIDE"] = settings.OPIK_URL_OVERRIDE or ""
+os.environ["OPIK_PROJECT_NAME"] = settings.OPIK_PROJECT_NAME or ""
+os.environ["OPIK_WORKSPACE"] =  settings.OPIK_WORKSPACE or ""
+
+client = opik.Opik(project_name="Backend API")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Run automatic migrations during startup."""
     init_db()
     yield
-
+    # Flush all Opik traces before shutdown
+    client.flush()
 
 app = FastAPI(
     title=settings.APP_NAME,

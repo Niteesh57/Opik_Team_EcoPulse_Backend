@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     TAVILY_API_KEY: Optional[str] = None
     DEAPI_TOKEN: Optional[str] = None
     IMGBB_API_KEY: Optional[str] = None
+    XPOZ_API_KEY: Optional[str] = None
+
+    OPIK_URL_OVERRIDE: Optional[str] = None
+    OPIK_WORKSPACE: Optional[str] = None
+    OPIK_API_KEY: Optional[str] = None
+    OPIK_PROJECT_NAME: Optional[str] = None
     
     class Config:
         env_file = ".env"

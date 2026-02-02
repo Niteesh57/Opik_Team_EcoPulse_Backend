@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Voice Room (Working)</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            width: 320px;
+            text-align: center;
+        }
+        input, button {
+            width: 90%;
+            padding: 10px;
+            margin: 8px 0;
+        }
+        #status { font-weight: bold; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>🎙 Voice Room</h2>
+    <input id="roomId" placeholder="Room ID">
+    <button onclick="join()">Join</button>
+    <div id="status">Disconnected</div>
+</div>
+
+<audio id="player" autoplay></audio>
+
+<script>
+let socket;
+let mediaSource;
+let sourceBuffer;
+let queue = [];
+
+async function join() {
+    const room = document.getElementById("roomId").value.trim();
+    if (!room) return alert("Enter room ID");
+
+    const statusEl = document.getElementById("status");
+    const audio = document.getElementById("player");
+
+    // 🔊 unlock audio
+    audio.muted = false;
+    audio.volume = 1;
+
+    mediaSource = new MediaSource();
+    audio.src = URL.createObjectURL(mediaSource);
+
+    mediaSource.addEventListener("sourceopen", () => {
+        sourceBuffer = mediaSource.addSourceBuffer(
+            'audio/webm; codecs="opus"'
+        );
+
+        sourceBuffer.addEventListener("updateend", () => {
+            if (queue.length && !sourceBuffer.updating) {
+                sourceBuffer.appendBuffer(queue.shift());
+            }
+        });
+    });
+
+    // 🔌 websocket
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(`ws://127.0.0.1:8000/ws/${room}`);
+    socket.binaryType = "arraybuffer";
+
+    socket.onmessage = (e) => {
+        if (!sourceBuffer || sourceBuffer.updating) {
+            queue.push(e.data);
+        } else {
+            sourceBuffer.appendBuffer(e.data);
+        }
+    };
+
+    // 🎤 mic
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream, {
+        mimeType: "audio/webm; codecs=opus"
+    });
+
+    recorder.ondataavailable = async e => {
+        if (e.data.size && socket.readyState === 1) {
+            socket.send(await e.data.arrayBuffer());
+        }
+    };
+
+    recorder.start(250);
+
+    statusEl.innerText = "Connected";
+    statusEl.style.color = "green";
+}
+</script>
+
+
+</body>
+</html>

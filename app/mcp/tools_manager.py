@@ -1,10 +1,14 @@
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 from app.mcp.tools import web_search, create_event_via_llm, update_event_via_llm
+from app.mcp.xpoz_mcp import xpoz_mcp_tool
 from app.utils.image import image_request_promote_refine, image_request
+import sys
+import subprocess
+import json
 
 @tool
-def create_event_image(description: str, runtime: ToolRuntime = None) -> str:
+def create_event_image(description: str) -> str:
     """Generate a specialized event poster image for an event.
     
     Args:
@@ -16,7 +20,7 @@ def create_event_image(description: str, runtime: ToolRuntime = None) -> str:
     return "Failed to generate image."
 
 @tool
-def create_event_normal_image(description: str, runtime: ToolRuntime = None) -> str:
+def create_event_normal_image(description: str) -> str:
     """Generate a standard image based on a prompt.
     
     Args:
@@ -30,7 +34,7 @@ def create_event_normal_image(description: str, runtime: ToolRuntime = None) -> 
     return "Failed to generate image."
     
 @tool
-def create_event_image_promote_refine(description: str, runtime: ToolRuntime = None) -> str:
+def create_event_image_promote_refine(description: str) -> str:
     """Generate and refine an event image promotion.
     
     Args:
@@ -46,5 +50,6 @@ event_tools = [
     create_event_image,
     create_event_normal_image,
     create_event_image_promote_refine,
-    update_event_via_llm
+    update_event_via_llm,
+    xpoz_mcp_tool
 ]

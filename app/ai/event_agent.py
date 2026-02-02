@@ -4,6 +4,10 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langsmith import Client
+from opik import track
+import opik
+from app.ai.opik import opik_tracer
+
 
 client = Client()
 prompt = client.pull_prompt("hwchase17/react")
@@ -56,34 +60,41 @@ def entry_node(state: EventAgentState):
 def generate_description_node(state: EventAgentState):
     """Generate or refine event description (max 100 chars)."""
     from app.ai.groq_client import get_chat_llm
-    llm = get_chat_llm()
-    name = state.get("event_name", "the event")
-    feedback = ""
     
-    # If we have iterated, use the last user message as feedback
-    if state.get("desc_iterations", 0) > 0:
-        feedback = state["messages"][-1].content
-    
-    if feedback:
-        prompt = (
-            f"Refine the following event description for '{name}' based on this feedback: '{feedback}'.\n"
-            f"Current description: {state.get('description', '')}\n"
-            f"IMPORTANT: Keep it under 100 characters. Be concise and engaging."
-        )
-    else:
-        prompt = (
-            f"Generate a short, engaging description for a community event named '{name}'.\n"
-            f"Focus on sustainability or community building.\n"
-            f"IMPORTANT: Keep it under 100 characters maximum. Be concise."
-        )
+    @opik.track(name="Generate Event Description")
+    def _generate_description():
+        llm = get_chat_llm()
+        name = state.get("event_name", "the event")
+        feedback = ""
+        
+        # If we have iterated, use the last user message as feedback
+        if state.get("desc_iterations", 0) > 0:
+            feedback = state["messages"][-1].content
+        
+        if feedback:
+            prompt = (
+                f"Refine the following event description for '{name}' based on this feedback: '{feedback}'.\n"
+                f"Current description: {state.get('description', '')}\n"
+                f"IMPORTANT: Keep it under 100 characters. Be concise and engaging."
+            )
+        else:
+            prompt = (
+                f"Generate a short, engaging description for a community event named '{name}'.\n"
+                f"Focus on sustainability or community building.\n"
+                f"IMPORTANT: Keep it under 100 characters maximum. Be concise."
+            )
 
-    response = llm.invoke([
-        SystemMessage(content="You are an event planner assistant. Generate descriptions that are under 100 characters."), 
-        HumanMessage(content=prompt)
-    ])
+        response = llm.invoke([
+            SystemMessage(content="You are an event planner assistant. Generate descriptions that are under 100 characters."), 
+            HumanMessage(content=prompt),
+        ], config={
+            "callbacks": [opik_tracer]}
+        )
+        return response.content.strip()
+    
+    description = _generate_description()
     
     # Truncate to 100 chars if needed
-    description = response.content.strip()
     if len(description) > 100:
         description = description[:97] + "..."
     
@@ -174,6 +185,28 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
     from langgraph.prebuilt import ToolRuntime
     from app.ai.groq_client import get_chat_llm
     
+    @opik.track(name="Finalize Event Creation")
+    def _categorize_event():
+        llm = get_chat_llm()
+        name = state.get("event_name", "")
+        desc = state.get("description", "")
+        evt_type = state.get("event_type", "public")
+        
+        tag_prompt = (
+            f"For an event named '{name}' with description '{desc}' and type '{evt_type}', "
+            f"provide exactly:\n"
+            f"1. TAG: A single word tag (e.g., eco, wellness, social, networking, learning, charity, sports)\n"
+            f"2. CLASS: A single word classification (e.g., party, workshop, meetup, seminar, cleanup, celebration)\n\n"
+            f"Respond ONLY in this format:\nTAG: [word]\nCLASS: [word]"
+        )
+        
+        resp = llm.invoke([
+            SystemMessage(content="You are a helpful assistant that categorizes events. Respond only with TAG and CLASS in the exact format requested."),
+            HumanMessage(content=tag_prompt)
+        ], config={"callbacks": [opik_tracer]}).content
+        
+        return resp
+    
     print("=" * 50)
     print("FINALIZE NODE CALLED")
     print(f"Event name: {state.get('event_name')}")
@@ -188,23 +221,7 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
     print("=" * 50)
     
     # Auto-tagging and classification using LLM
-    llm = get_chat_llm()
-    name = state.get("event_name", "")
-    desc = state.get("description", "")
-    evt_type = state.get("event_type", "public")
-    
-    tag_prompt = (
-        f"For an event named '{name}' with description '{desc}' and type '{evt_type}', "
-        f"provide exactly:\n"
-        f"1. TAG: A single word tag (e.g., eco, wellness, social, networking, learning, charity, sports)\n"
-        f"2. CLASS: A single word classification (e.g., party, workshop, meetup, seminar, cleanup, celebration)\n\n"
-        f"Respond ONLY in this format:\nTAG: [word]\nCLASS: [word]"
-    )
-    
-    resp = llm.invoke([
-        SystemMessage(content="You are a helpful assistant that categorizes events. Respond only with TAG and CLASS in the exact format requested."),
-        HumanMessage(content=tag_prompt)
-    ]).content
+    resp = _categorize_event()
     
     print(f"TAG/CLASS response: {resp}")
     
@@ -229,8 +246,8 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
     print("Calling create_event_via_llm...")
     # Prepare event data with all collected fields
     result_json = create_event_via_llm.invoke({
-        "event_name": name,
-        "event_description": desc,
+        "event_name": state.get("event_name", ""),
+        "event_description": state.get("description", ""),
         "event_type": state.get("event_type", "public"),
         "event_place": state.get("place"),
         "event_date": state.get("date"),

@@ -369,6 +369,10 @@ async def stream_chat(
                 }
 
                 initial_messages = create_initial_messages(prompt_text)
+                initial_state = {
+                    "messages": initial_messages,
+                    "thread_id": thread_id,
+                }
                 tool_descriptions = {
                     "get_user_context": "Fetching user profile",
                     "get_community_context": "Loading community details",
@@ -388,7 +392,7 @@ async def stream_chat(
                 # stream_mode="values" yields full state snapshots
                 last_state = None
                 for state in agent.stream(
-                    {"messages": initial_messages},
+                    initial_state,
                     config,
                     stream_mode="values",
                 ):

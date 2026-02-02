@@ -16,11 +16,16 @@ engine = create_engine(
     max_overflow=5,
     pool_pre_ping=True,  # Checks if connection is alive before using it
     pool_recycle=1800,   # Matches most cloud provider idle timeouts
+    pool_reset_on_return='rollback',  # Resets session state on return
     connect_args={"options": "-c timezone=utc"} # Ensures consistent time handling
 )
 
 # 2. Session Factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False, 
+    autoflush=False, 
+    bind=engine
+)
 
 # 3. Modern Base Class (SQLAlchemy 2.0 style)
 Base = declarative_base()
