@@ -198,7 +198,6 @@ def handle_guest_speakers_node(state: EventAgentState):
 
 def finalize_node(state: EventAgentState, config: RunnableConfig):
     from app.mcp.tools import create_event_via_llm
-    from langgraph.prebuilt import ToolRuntime
     from app.ai.groq_client import get_chat_llm
     
     @opik.track(name="Finalize Event Creation")
@@ -255,9 +254,6 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         classification = class_match.group(1).lower()
     
     print(f"Parsed - Tag: {tag}, Classification: {classification}")
-        
-    # Mock runtime for tool
-    mock_runtime = ToolRuntime(config=config, store=None)
     
     print("Calling create_event_via_llm...")
     # Prepare event data with all collected fields
@@ -273,8 +269,7 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         "guest_speakers": state.get("guest_speakers"),
         "tag": tag,
         "event_classification": classification,
-        "room_id": None, # Tool will resolve
-        "runtime": mock_runtime
+        "room_id": None  # Tool will resolve
     }, config=_opik_config(state))
     
     print(f"Result from create_event_via_llm: {result_json}")
