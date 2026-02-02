@@ -1,4 +1,4 @@
-from typing import Annotated, TypedDict, Optional, Literal, Union
+from typing import Annotated, TypedDict, Optional, Literal, Union, Dict, Any
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
@@ -6,6 +6,7 @@ from langchain_core.runnables import RunnableConfig
 from langsmith import Client
 from opik import track
 import opik
+from opik.integrations.langchain import OpikTracer
 from app.ai.opik import opik_tracer
 
 
@@ -44,6 +45,23 @@ class EventAgentState(TypedDict):
     max_participants: Optional[str]
     guest_speakers: Optional[str]
     room_id: Optional[str]
+    thread_id: Optional[str]
+
+
+def _opik_config(state: EventAgentState, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config: Dict[str, Any] = {"callbacks": [opik_tracer]}
+    metadata = (extra.get("metadata", {}).copy() if extra and "metadata" in extra else {})
+    thread_id = state.get("thread_id")
+    if thread_id:
+        metadata["thread_id"] = thread_id
+    if metadata:
+        config["metadata"] = metadata
+    if extra:
+        for key, value in extra.items():
+            if key == "metadata":
+                continue
+            config[key] = value
+    return config
 
 # --- Nodes ---
 
@@ -87,9 +105,7 @@ def generate_description_node(state: EventAgentState):
         response = llm.invoke([
             SystemMessage(content="You are an event planner assistant. Generate descriptions that are under 100 characters."), 
             HumanMessage(content=prompt),
-        ], config={
-            "callbacks": [opik_tracer]}
-        )
+        ], config=_opik_config(state))
         return response.content.strip()
     
     description = _generate_description()
@@ -203,7 +219,7 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         resp = llm.invoke([
             SystemMessage(content="You are a helpful assistant that categorizes events. Respond only with TAG and CLASS in the exact format requested."),
             HumanMessage(content=tag_prompt)
-        ], config={"callbacks": [opik_tracer]}).content
+        ], config=_opik_config(state)).content
         
         return resp
     
@@ -259,7 +275,7 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         "event_classification": classification,
         "room_id": None, # Tool will resolve
         "runtime": mock_runtime
-    })
+    }, config=_opik_config(state))
     
     print(f"Result from create_event_via_llm: {result_json}")
     print("=" * 50)

@@ -3,6 +3,8 @@ import json
 import uuid
 from typing import List, Optional
 
+import opik
+from opik import opik_context
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -260,7 +262,7 @@ async def update_feedback(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Toggle message like/dislike flags."""
+    """Toggle message like/dislike flags and update Opik trace feedback."""
     if payload.liked and payload.disliked:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -274,7 +276,54 @@ async def update_feedback(
             detail="Message not found",
         )
 
+    # Update database
     updated = user_message_crud.set_feedback(db, message_id, payload.liked, payload.disliked)
+    
+    # Update Opik trace with feedback
+    try:
+        # Get the session to retrieve thread_id
+        session = user_message_crud.get_session(db, message.session_id)
+        if session:
+            thread_id = session.session_id
+            
+            # Determine feedback value and reason
+            feedback_value = None
+            feedback_reason = None
+            
+            if payload.liked:
+                feedback_value = 1.0
+                feedback_reason = "User liked this response"
+            elif payload.disliked:
+                feedback_value = 0.0
+                feedback_reason = "User disliked this response"
+            
+            if feedback_value is not None:
+                # Track feedback update in Opik
+                @opik.track(name=f"User Feedback for thread {thread_id}", tags=["user_feedback", thread_id])
+                def record_opik_feedback():
+                    opik_context.update_current_trace(
+                        feedback_scores=[
+                            {
+                                "name": "user_feedback",
+                                "value": feedback_value,
+                                "reason": feedback_reason
+                            }
+                        ],
+                        metadata={
+                            "thread_id": thread_id,
+                            "message_id": message_id,
+                            "user_id": current_user.id,
+                            "timestamp": str(updated.updated_at) if hasattr(updated, 'updated_at') else None
+                        }
+                    )
+                    return {"thread_id": thread_id, "feedback": feedback_value}
+                
+                # Execute the feedback tracking
+                record_opik_feedback()
+    except Exception as e:
+        # Log the error but don't fail the request
+        print(f"Error updating Opik feedback: {e}")
+    
     return updated
 
 

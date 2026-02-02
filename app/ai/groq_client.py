@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from langsmith import Client
 from opik import track
 import opik
+from opik.integrations.langchain import track_langgraph, OpikTracer
 
 client = Client()
 prompt = client.pull_prompt("hwchase17/react")
@@ -206,6 +207,7 @@ def compile_react_agent_with_persistence(conn, user_id=None):
             "handle_type"
         ]
     ) 
+    event_agent = track_langgraph(event_agent, opik_tracer)
 
     graph = StateGraph(AgentState)
     graph.add_node("llm", call_model)
@@ -242,6 +244,9 @@ def compile_react_agent_with_persistence(conn, user_id=None):
         # But for 'human in the loop', the user needs to invoke again.
     )
 
+    # Initialize OpikTracer with the compiled graph structure
+    local_opik_tracer = OpikTracer(graph=agent.get_graph(xray=True))
+    agent = track_langgraph(agent, local_opik_tracer)
     return agent, store
 
 

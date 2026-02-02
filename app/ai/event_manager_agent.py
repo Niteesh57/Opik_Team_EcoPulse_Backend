@@ -10,16 +10,17 @@ from langgraph.prebuilt import ToolNode
 from psycopg_pool import ConnectionPool
 from opik import track
 import opik
+from opik.integrations.langchain import track_langgraph, OpikTracer
 
 from app.core.config import settings
 from app.mcp.tools_manager import event_tools
 from app.ai.groq_client import get_connection_pool, _build_llm
-from app.ai.opik import opik_tracer
 
 
 class EventAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     event_id: Optional[str]
+    thread_id: Optional[str]
 
     
 # System prompt for Event Manager Agent
@@ -75,6 +76,15 @@ def get_event_manager_agent(conn):
     llm = _build_llm()
     model = llm.bind_tools(event_tools)
 
+    def _build_invoke_config(state: EventAgentState) -> dict:
+        # We'll use a default tracer here since opik_tracer is created later
+        from app.ai.opik import opik_tracer as default_tracer
+        config = {"callbacks": [default_tracer]}
+        thread_id = state.get("thread_id")
+        if thread_id:
+            config["metadata"] = {"thread_id": thread_id}
+        return config
+
     @opik.track(name="Event Manager Agent Call")
     def call_model(state: EventAgentState):
         messages = state["messages"]
@@ -85,7 +95,7 @@ def get_event_manager_agent(conn):
              # Force update system prompt
             messages[0] = SystemMessage(content=SYSTEM_PROMPT_EVENT_MANAGER)
             
-        response = model.invoke(messages, config={"callbacks": [opik_tracer]})
+        response = model.invoke(messages, config=_build_invoke_config(state))
         return {"messages": [response]}
 
     # Define the graph
@@ -105,4 +115,6 @@ def get_event_manager_agent(conn):
     workflow.add_edge("tools", "agent")
 
     app = workflow.compile(checkpointer=checkpointer)
+    opik_tracer = OpikTracer(graph=app.get_graph(xray=True))
+    app = track_langgraph(app, opik_tracer)
     return app

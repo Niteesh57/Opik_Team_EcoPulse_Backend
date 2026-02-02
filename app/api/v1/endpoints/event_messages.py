@@ -99,7 +99,11 @@ async def handle_ai_request(event_id: str, prompt: str, db_session_factory, user
              # IMPORTANT: To make it truly async non-blocking, we should use aconvoke if available or run_in_executor
              # For now, simplistic invocation:
              response = agent.invoke(
-                 {"messages": [HumanMessage(content=prompt)], "event_id": event_id},
+                 {
+                    "messages": [HumanMessage(content=prompt)],
+                    "event_id": event_id,
+                    "thread_id": config["configurable"]["thread_id"],
+                 },
                  config=config
              )
              
@@ -254,7 +258,308 @@ async def websocket_endpoint(
         manager.disconnect(websocket, event_id)
 
 
-@router.post("/{event_id}", response_model=EventMessageOut)
+# --- Call Management System ---
+
+class CallManager:
+    """Manages active calls per event."""
+    def __init__(self):
+        # Structure: {event_id: {"is_live": bool, "participants": {user_id: {"name", "username"}}, "started_at": datetime}}
+        self.active_calls: Dict[str, dict] = {}
+
+    def start_call(self, event_id: str, initiator_id: int, initiator_name: str, initiator_username: str) -> bool:
+        """Start a new call for an event. Returns True if successful."""
+        if event_id in self.active_calls and self.active_calls[event_id]["is_live"]:
+            return False  # Call already live
+        
+        self.active_calls[event_id] = {
+            "is_live": True,
+            "participants": {
+                initiator_id: {
+                    "full_name": initiator_name,
+                    "username": initiator_username,
+                    "joined_at": datetime.now().isoformat()
+                }
+            },
+            "started_at": datetime.now().isoformat(),
+            "initiator_id": initiator_id
+        }
+        return True
+
+    def end_call(self, event_id: str) -> bool:
+        """End a call for an event."""
+        if event_id in self.active_calls:
+            self.active_calls[event_id]["is_live"] = False
+            return True
+        return False
+
+    def join_call(self, event_id: str, user_id: int, user_name: str, user_username: str) -> bool:
+        """Add a participant to an active call."""
+        if event_id not in self.active_calls or not self.active_calls[event_id]["is_live"]:
+            return False  # Call not active
+        
+        self.active_calls[event_id]["participants"][user_id] = {
+            "full_name": user_name,
+            "username": user_username,
+            "joined_at": datetime.now().isoformat()
+        }
+        return True
+
+    def leave_call(self, event_id: str, user_id: int) -> bool:
+        """Remove a participant from a call."""
+        if event_id in self.active_calls and user_id in self.active_calls[event_id]["participants"]:
+            del self.active_calls[event_id]["participants"][user_id]
+            
+            # End call if no participants left
+            if not self.active_calls[event_id]["participants"]:
+                self.active_calls[event_id]["is_live"] = False
+            
+            return True
+        return False
+
+    def get_call_status(self, event_id: str) -> dict:
+        """Get the current call status for an event."""
+        if event_id not in self.active_calls:
+            return {
+                "event_id": event_id,
+                "is_live": False,
+                "participant_count": 0,
+                "participants": [],
+                "started_at": None
+            }
+        
+        call = self.active_calls[event_id]
+        return {
+            "event_id": event_id,
+            "is_live": call["is_live"],
+            "participant_count": len(call["participants"]),
+            "participants": [
+                {
+                    "user_id": uid,
+                    "full_name": info["full_name"],
+                    "username": info["username"],
+                    "joined_at": info["joined_at"]
+                }
+                for uid, info in call["participants"].items()
+            ],
+            "started_at": call.get("started_at"),
+            "initiator_id": call.get("initiator_id")
+        }
+
+call_manager = CallManager()
+
+
+# --- Call Endpoints ---
+
+@router.post("/{event_id}/call/start")
+async def start_call(
+    event_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Start a call for an event.
+    Only one call can be live per event at a time.
+    """
+    # Verify event exists
+    event = event_crud.get_event_by_event_id(db, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Verify user has joined the event
+    is_member = event_user_crud.is_attending(db, event, current_user.id)
+    if not is_member:
+        raise HTTPException(status_code=403, detail="You must join the event to start a call")
+    
+    # Start the call
+    success = call_manager.start_call(
+        event_id=event_id,
+        initiator_id=current_user.id,
+        initiator_name=current_user.full_name,
+        initiator_username=current_user.username
+    )
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="A call is already active for this event")
+    
+    # Broadcast call started event
+    broadcast_msg = {
+        "type": "call_started",
+        "event_id": event_id,
+        "initiator_id": current_user.id,
+        "initiator_name": current_user.full_name,
+        "timestamp": datetime.now().isoformat()
+    }
+    await manager.broadcast(broadcast_msg, event_id)
+    
+    return {
+        "status": "success",
+        "message": "Call started",
+        "event_id": event_id,
+        "call_info": call_manager.get_call_status(event_id)
+    }
+
+
+@router.post("/{event_id}/call/join")
+async def join_call(
+    event_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Join an active call for an event.
+    """
+    # Verify event exists
+    event = event_crud.get_event_by_event_id(db, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Verify user has joined the event
+    is_member = event_user_crud.is_attending(db, event, current_user.id)
+    if not is_member:
+        raise HTTPException(status_code=403, detail="You must join the event to join a call")
+    
+    # Join the call
+    success = call_manager.join_call(
+        event_id=event_id,
+        user_id=current_user.id,
+        user_name=current_user.full_name,
+        user_username=current_user.username
+    )
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="No active call for this event")
+    
+    # Broadcast user joined event
+    broadcast_msg = {
+        "type": "user_joined_call",
+        "event_id": event_id,
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "full_name": current_user.full_name,
+        "timestamp": datetime.now().isoformat(),
+        "participant_count": len(call_manager.get_call_status(event_id)["participants"])
+    }
+    await manager.broadcast(broadcast_msg, event_id)
+    
+    return {
+        "status": "success",
+        "message": "Joined call",
+        "event_id": event_id,
+        "call_info": call_manager.get_call_status(event_id)
+    }
+
+
+@router.post("/{event_id}/call/leave")
+async def leave_call(
+    event_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Leave an active call for an event.
+    """
+    # Verify event exists
+    event = event_crud.get_event_by_event_id(db, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Leave the call
+    success = call_manager.leave_call(event_id=event_id, user_id=current_user.id)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="You are not in a call for this event")
+    
+    # Broadcast user left event
+    call_status = call_manager.get_call_status(event_id)
+    broadcast_msg = {
+        "type": "user_left_call",
+        "event_id": event_id,
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "timestamp": datetime.now().isoformat(),
+        "participant_count": call_status["participant_count"],
+        "call_ended": not call_status["is_live"]
+    }
+    await manager.broadcast(broadcast_msg, event_id)
+    
+    return {
+        "status": "success",
+        "message": "Left call",
+        "event_id": event_id,
+        "call_info": call_status
+    }
+
+
+@router.post("/{event_id}/call/end")
+async def end_call(
+    event_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    End the active call for an event.
+    Only the initiator can end the call.
+    """
+    # Verify event exists
+    event = event_crud.get_event_by_event_id(db, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Check if user is the call initiator
+    call_status = call_manager.get_call_status(event_id)
+    if not call_status["is_live"]:
+        raise HTTPException(status_code=400, detail="No active call for this event")
+    
+    if call_status["initiator_id"] != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the call initiator can end the call")
+    
+    # End the call
+    call_manager.end_call(event_id=event_id)
+    
+    # Broadcast call ended event
+    broadcast_msg = {
+        "type": "call_ended",
+        "event_id": event_id,
+        "ended_by_id": current_user.id,
+        "timestamp": datetime.now().isoformat()
+    }
+    await manager.broadcast(broadcast_msg, event_id)
+    
+    return {
+        "status": "success",
+        "message": "Call ended",
+        "event_id": event_id
+    }
+
+
+@router.get("/{event_id}/call/status")
+async def get_call_status(
+    event_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the current call status for an event.
+    Returns:
+    - is_live: Whether a call is currently active
+    - participant_count: Number of people in the call
+    - participants: List of participants with details
+    - started_at: When the call started
+    - initiator_id: Who started the call
+    """
+    # Verify event exists
+    event = event_crud.get_event_by_event_id(db, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Verify user has joined the event
+    is_member = event_user_crud.is_attending(db, event, current_user.id)
+    if not is_member:
+        raise HTTPException(status_code=403, detail="You must join the event to check call status")
+    
+    return call_manager.get_call_status(event_id)
+
+
 def post_event_message(
     event_id: str,
     message_in: EventMessageCreate,
