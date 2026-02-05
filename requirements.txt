@@ -45,6 +45,7 @@ googletrans==4.0.2
 opik
 litellm==1.80.0
 opik-optimizer
+websockets>=12.0
 av
 # -------------------------
 # MCP
