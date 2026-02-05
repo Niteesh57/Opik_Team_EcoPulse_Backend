@@ -43,7 +43,7 @@ googletrans==4.0.2
 # Observability / LLM routing
 # -------------------------
 opik
-litellm
+litellm==1.80.0
 opik-optimizer
 av
 # -------------------------
