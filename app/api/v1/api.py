@@ -12,6 +12,8 @@ from app.api.v1.endpoints.champions import router as champions_router
 from app.api.v1.endpoints.event_messages import router as event_messages_router
 from app.api.v1.endpoints.webhooks import router as webhooks_router
 from app.api.v1.endpoints.notifications import router as notifications_router
+from app.api.v1.endpoints.voice import router as voice_router
+from app.api.v1.endpoints.analytics import router as analytics_router
 
 api_router = APIRouter()
 
@@ -26,4 +28,6 @@ api_router.include_router(champions_router, tags=["Champions"])
 api_router.include_router(event_messages_router, tags=["Event Messages"])
 api_router.include_router(notifications_router, tags=["Notifications"])
 api_router.include_router(webhooks_router, prefix="/webhooks", tags=["Webhooks"])
+api_router.include_router(voice_router, prefix="/voice", tags=["Voice Calls"])
+api_router.include_router(analytics_router, prefix="/analytics", tags=["AI Analytics & Observability"])
 

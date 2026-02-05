@@ -1,4 +1,5 @@
 from typing import Annotated, TypedDict, Optional, Literal, Union, Dict, Any
+from datetime import datetime
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
@@ -6,37 +7,36 @@ from langchain_core.runnables import RunnableConfig
 from langsmith import Client
 from opik import track
 import opik
+from opik import opik_context
 from opik.integrations.langchain import OpikTracer
-from app.ai.opik import opik_tracer
+from app.ai.opik import (
+    opik_tracer,
+    track_agent_call,
+    track_llm_generation,
+    feedback_collector,
+    PerformanceMonitor,
+    ConversationAnalytics,
+)
+from app.ai.prompts import (
+    EVENT_CREATION_SUBAGENT_PROMPT,
+    EVENT_CATEGORIZATION_PROMPT,
+)
+from app.ai.social_media_node import (
+    social_media_generation_node,
+    ask_post_feedback_node,
+    handle_post_feedback_node
+)
 
 
 client = Client()
 prompt = client.pull_prompt("hwchase17/react")
-
-SUBAGENT_PROMPT = (
-    "\n\n"
-    "EVENT CREATION WORKFLOW (MANDATORY):\n"
-    "When a user wants to create an event, you MUST collect details step by step:\n"
-    "1. Ask for EVENT NAME (if not given)\n"
-    "2. Generate a description and ask for feedback (refine up to 4 times)\n"
-    "3. Ask for PLACE/LOCATION\n"
-    "4. Ask for DATE (e.g., February 2, 2026)\n"
-    "5. Ask for TIME (start and end, e.g., 4 pm - 6 pm)\n"
-    "6. Ask for EVENT TYPE (public, private, community, social)\n"
-    "7. Ask for MAX PARTICIPANTS (number or 'no limit')\n"
-    "8. Ask for GUEST SPEAKERS (names or 'none')\n"
-    "\n"
-    "CRITICAL: After collecting ALL details, you MUST call the 'create_event_via_llm' tool to save the event to the database. "
-    "DO NOT just summarize the event - you MUST call the tool. The event is NOT created until you call the tool.\n"
-    "Pass all collected values to create_event_via_llm: event_name, event_description, event_type, event_place, event_date, start_time, end_time, max_participants, guest_speakers."
-)
 
 # --- State ---
 class EventAgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     event_name: Optional[str]
     description: Optional[str]
-    desc_iterations: Optional[int]
+    desc_iterations: int
     place: Optional[str]
     date: Optional[str]
     start_time: Optional[str]
@@ -46,14 +46,27 @@ class EventAgentState(TypedDict):
     guest_speakers: Optional[str]
     room_id: Optional[str]
     thread_id: Optional[str]
+    social_media_posts: Optional[Dict[str, str]]
+    social_media_hashtags: Optional[list]
+    social_media_feedback: Optional[list]
 
 
 def _opik_config(state: EventAgentState, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build Opik configuration with comprehensive metadata."""
     config: Dict[str, Any] = {"callbacks": [opik_tracer]}
     metadata = (extra.get("metadata", {}).copy() if extra and "metadata" in extra else {})
+    
+    # Add standard metadata
     thread_id = state.get("thread_id")
     if thread_id:
         metadata["thread_id"] = thread_id
+    
+    # Add event workflow metadata
+    metadata["workflow"] = "event_creation"
+    metadata["event_name"] = state.get("event_name", "")
+    metadata["workflow_stage"] = _get_workflow_stage(state)
+    metadata["timestamp"] = datetime.now().isoformat()
+    
     if metadata:
         config["metadata"] = metadata
     if extra:
@@ -63,11 +76,47 @@ def _opik_config(state: EventAgentState, extra: Optional[Dict[str, Any]] = None)
             config[key] = value
     return config
 
+
+def _get_workflow_stage(state: EventAgentState) -> str:
+    """Determine current workflow stage for tracking."""
+    if not state.get("event_name"):
+        return "entry"
+    if not state.get("description"):
+        return "generating_description"
+    if not state.get("place"):
+        return "collecting_place"
+    if not state.get("date"):
+        return "collecting_date"
+    if not state.get("start_time"):
+        return "collecting_time"
+    if not state.get("event_type"):
+        return "collecting_type"
+    if not state.get("max_participants"):
+        return "collecting_participants"
+    if not state.get("guest_speakers"):
+        return "collecting_speakers"
+    if not state.get("social_media_posts"):
+        return "generating_social_media"
+    return "complete"
+
+
 # --- Nodes ---
 
+@track(name="Event Entry Node")
 def entry_node(state: EventAgentState):
     """Analyze the initial input to extract event name."""
     msg = state["messages"][-1]
+    
+    # Track user journey
+    ConversationAnalytics.track_user_journey(
+        user_id="event_creator",
+        action="event_creation_started",
+        context={
+            "thread_id": state.get("thread_id"),
+            "initial_message": str(msg.content)[:100] if hasattr(msg, 'content') else ""
+        }
+    )
+    
     # Attempt to extract name if not present.
     if isinstance(msg, HumanMessage) and not state.get("event_name"):
         # For simplicity, we assume the user intent *is* the name or contains it.
@@ -102,11 +151,37 @@ def generate_description_node(state: EventAgentState):
                 f"IMPORTANT: Keep it under 100 characters maximum. Be concise."
             )
 
+        from datetime import datetime
+        start_time = datetime.now()
         response = llm.invoke([
             SystemMessage(content="You are an event planner assistant. Generate descriptions that are under 100 characters."), 
             HumanMessage(content=prompt),
         ], config=_opik_config(state))
-        return response.content.strip()
+        result = response.content.strip()
+        latency_ms = (datetime.now() - start_time).total_seconds() * 1000
+        
+        # Track LLM call in Opik
+        try:
+            opik_context.update_current_trace(
+                metadata={
+                    "llm_call": "generate_description",
+                    "event_name": name,
+                    "iteration": state.get("desc_iterations", 0),
+                    "has_feedback": bool(feedback),
+                    "prompt_length": len(prompt),
+                    "response_length": len(result),
+                    "latency_ms": latency_ms,
+                    "model": "groq/openai-gpt-oss-20b",
+                    "timestamp": start_time.isoformat()
+                },
+                feedback_scores=[
+                    {"name": "description_generation", "value": 0.8, "reason": "LLM generated description successfully"}
+                ]
+            )
+        except Exception as e:
+            print(f"Error updating Opik trace: {e}")
+        
+        return result
     
     description = _generate_description()
     
@@ -198,6 +273,7 @@ def handle_guest_speakers_node(state: EventAgentState):
 
 def finalize_node(state: EventAgentState, config: RunnableConfig):
     from app.mcp.tools import create_event_via_llm
+    from langgraph.prebuilt import ToolRuntime
     from app.ai.groq_client import get_chat_llm
     
     @opik.track(name="Finalize Event Creation")
@@ -207,18 +283,46 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         desc = state.get("description", "")
         evt_type = state.get("event_type", "public")
         
-        tag_prompt = (
-            f"For an event named '{name}' with description '{desc}' and type '{evt_type}', "
-            f"provide exactly:\n"
-            f"1. TAG: A single word tag (e.g., eco, wellness, social, networking, learning, charity, sports)\n"
-            f"2. CLASS: A single word classification (e.g., party, workshop, meetup, seminar, cleanup, celebration)\n\n"
-            f"Respond ONLY in this format:\nTAG: [word]\nCLASS: [word]"
+        tag_prompt = EVENT_CATEGORIZATION_PROMPT.prompt.format(
+            name=name, desc=desc, evt_type=evt_type
         )
         
+        from datetime import datetime
+        start_time = datetime.now()
         resp = llm.invoke([
             SystemMessage(content="You are a helpful assistant that categorizes events. Respond only with TAG and CLASS in the exact format requested."),
             HumanMessage(content=tag_prompt)
         ], config=_opik_config(state)).content
+        latency_ms = (datetime.now() - start_time).total_seconds() * 1000
+        
+        # Parse tag and class for tracing
+        import re as re_module
+        tag_match = re_module.search(r'TAG:\s*(\w+)', resp, re_module.IGNORECASE)
+        class_match = re_module.search(r'CLASS:\s*(\w+)', resp, re_module.IGNORECASE)
+        extracted_tag = tag_match.group(1) if tag_match else "unknown"
+        extracted_class = class_match.group(1) if class_match else "unknown"
+        
+        # Track LLM call in Opik
+        try:
+            opik_context.update_current_trace(
+                metadata={
+                    "llm_call": "categorize_event",
+                    "event_name": name,
+                    "event_type": evt_type,
+                    "extracted_tag": extracted_tag,
+                    "extracted_class": extracted_class,
+                    "prompt_length": len(tag_prompt),
+                    "response_length": len(resp),
+                    "latency_ms": latency_ms,
+                    "model": "groq/openai-gpt-oss-20b",
+                    "timestamp": start_time.isoformat()
+                },
+                feedback_scores=[
+                    {"name": "event_categorization", "value": 0.85, "reason": f"Event categorized as {extracted_tag}/{extracted_class}"}
+                ]
+            )
+        except Exception as e:
+            print(f"Error updating Opik trace: {e}")
         
         return resp
     
@@ -254,8 +358,13 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         classification = class_match.group(1).lower()
     
     print(f"Parsed - Tag: {tag}, Classification: {classification}")
+        
+    # Mock runtime for tool
+    mock_runtime = ToolRuntime(config=config, store=None)
     
     print("Calling create_event_via_llm...")
+    start_time_creation = datetime.now()
+    
     # Prepare event data with all collected fields
     result_json = create_event_via_llm.invoke({
         "event_name": state.get("event_name", ""),
@@ -269,8 +378,54 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         "guest_speakers": state.get("guest_speakers"),
         "tag": tag,
         "event_classification": classification,
-        "room_id": None  # Tool will resolve
+        "room_id": None, # Tool will resolve
+        "runtime": mock_runtime
     }, config=_opik_config(state))
+    
+    # Track event creation success with performance metrics
+    creation_latency = (datetime.now() - start_time_creation).total_seconds() * 1000
+    PerformanceMonitor.record_latency(
+        operation="event_creation",
+        latency_ms=creation_latency,
+        success=True,
+        metadata={
+            "thread_id": state.get("thread_id"),
+            "event_name": state.get("event_name"),
+            "event_type": state.get("event_type"),
+            "tag": tag,
+            "classification": classification
+        }
+    )
+    
+    # Track completion in user journey
+    ConversationAnalytics.track_user_journey(
+        user_id="event_creator",
+        action="event_creation_completed",
+        context={
+            "thread_id": state.get("thread_id"),
+            "event_name": state.get("event_name"),
+            "event_type": state.get("event_type"),
+            "creation_latency_ms": creation_latency
+        }
+    )
+    
+    # Update Opik trace with event creation details
+    try:
+        opik_context.update_current_trace(
+            metadata={
+                "event_created": True,
+                "event_name": state.get("event_name"),
+                "event_type": state.get("event_type"),
+                "tag": tag,
+                "classification": classification,
+                "workflow_stage": "complete"
+            },
+            feedback_scores=[
+                {"name": "workflow_completion", "value": 1.0, "reason": "Event workflow completed successfully"}
+            ]
+        )
+    except Exception as e:
+        print(f"Error updating Opik trace: {e}")
     
     print(f"Result from create_event_via_llm: {result_json}")
     print("=" * 50)
@@ -307,6 +462,11 @@ def build_event_subgraph():
     
     workflow.add_node("finalize", finalize_node)
     
+    # Social media nodes
+    workflow.add_node("generate_social_media", social_media_generation_node)
+    workflow.add_node("ask_post_feedback", ask_post_feedback_node)
+    workflow.add_node("handle_post_feedback", handle_post_feedback_node)
+    
     # Edges
     workflow.add_edge(START, "entry")
     workflow.add_edge("entry", "generate_desc")
@@ -340,7 +500,13 @@ def build_event_subgraph():
     workflow.add_edge("ask_guest_speakers", "handle_guest_speakers")
     workflow.add_edge("handle_guest_speakers", "finalize")
     
-    workflow.add_edge("finalize", END)
+    # After event finalization, generate social media posts
+    workflow.add_edge("finalize", "generate_social_media")
+    
+    # Social media feedback flow
+    workflow.add_edge("generate_social_media", "ask_post_feedback")
+    workflow.add_edge("ask_post_feedback", "handle_post_feedback")
+    workflow.add_edge("handle_post_feedback", END)
     
     return workflow
 

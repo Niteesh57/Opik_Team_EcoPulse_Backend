@@ -2,6 +2,7 @@
 import json
 import uuid
 from typing import List, Optional
+from datetime import datetime
 
 import opik
 from opik import opik_context
@@ -16,6 +17,12 @@ from app.ai.groq_client import (
     compile_react_agent_with_persistence,
     create_initial_messages,
     ChatRequest,
+)
+from app.ai.opik import (
+    feedback_collector,
+    ConversationAnalytics,
+    PerformanceMonitor,
+    track_agent_call,
 )
 from app.crud import user_message as user_message_crud
 from app.database import get_db
@@ -279,49 +286,76 @@ async def update_feedback(
     # Update database
     updated = user_message_crud.set_feedback(db, message_id, payload.liked, payload.disliked)
     
-    # Update Opik trace with feedback
+    # Update Opik trace with comprehensive feedback using FeedbackCollector
     try:
-        # Get the session to retrieve thread_id
         session = user_message_crud.get_session(db, message.session_id)
         if session:
             thread_id = session.session_id
             
             # Determine feedback value and reason
-            feedback_value = None
-            feedback_reason = None
-            
             if payload.liked:
-                feedback_value = 1.0
-                feedback_reason = "User liked this response"
-            elif payload.disliked:
-                feedback_value = 0.0
-                feedback_reason = "User disliked this response"
-            
-            if feedback_value is not None:
-                # Track feedback update in Opik
-                @opik.track(name=f"User Feedback for thread {thread_id}", tags=["user_feedback", thread_id])
-                def record_opik_feedback():
-                    opik_context.update_current_trace(
-                        feedback_scores=[
-                            {
-                                "name": "user_feedback",
-                                "value": feedback_value,
-                                "reason": feedback_reason
-                            }
-                        ],
-                        metadata={
-                            "thread_id": thread_id,
-                            "message_id": message_id,
-                            "user_id": current_user.id,
-                            "timestamp": str(updated.updated_at) if hasattr(updated, 'updated_at') else None
-                        }
-                    )
-                    return {"thread_id": thread_id, "feedback": feedback_value}
+                # Record positive feedback with multiple dimensions
+                feedback_collector.record_comprehensive_feedback(
+                    thread_id=thread_id,
+                    scores={
+                        "helpful": 1.0,
+                        "relevant": 0.9,
+                        "actionable": 0.8
+                    },
+                    overall_comment="User liked this response",
+                    user_id=str(current_user.id)
+                )
                 
-                # Execute the feedback tracking
-                record_opik_feedback()
+                # Also track performance metric
+                PerformanceMonitor.record_latency(
+                    operation="positive_feedback",
+                    latency_ms=0,
+                    success=True,
+                    metadata={
+                        "thread_id": thread_id,
+                        "message_id": message_id,
+                        "feedback_type": "liked"
+                    }
+                )
+                
+            elif payload.disliked:
+                # Record negative feedback for analysis
+                feedback_collector.record_comprehensive_feedback(
+                    thread_id=thread_id,
+                    scores={
+                        "helpful": 0.0,
+                        "relevant": 0.3,
+                        "actionable": 0.2
+                    },
+                    overall_comment="User disliked this response - needs improvement",
+                    user_id=str(current_user.id)
+                )
+                
+                PerformanceMonitor.record_latency(
+                    operation="negative_feedback",
+                    latency_ms=0,
+                    success=True,
+                    metadata={
+                        "thread_id": thread_id,
+                        "message_id": message_id,
+                        "feedback_type": "disliked"
+                    }
+                )
+            
+            # Track user journey event
+            ConversationAnalytics.track_user_journey(
+                user_id=str(current_user.id),
+                action="feedback_submitted",
+                context={
+                    "thread_id": thread_id,
+                    "message_id": message_id,
+                    "liked": payload.liked,
+                    "disliked": payload.disliked,
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+                
     except Exception as e:
-        # Log the error but don't fail the request
         print(f"Error updating Opik feedback: {e}")
     
     return updated

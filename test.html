@@ -72,7 +72,7 @@ async function join() {
 
     // 🔌 websocket
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    socket = new WebSocket(`ws://127.0.0.1:8000/ws/${room}`);
+    socket = new WebSocket(`ws://127.0.0.1:8000/api/v1/voice/voice/ws/${room}`);
     socket.binaryType = "arraybuffer";
 
     socket.onmessage = (e) => {

@@ -1,6 +1,7 @@
 """LangGraph agent with Groq LLM, tools, and PostgreSQL persistence."""
 from functools import lru_cache
 from typing import Annotated, Optional, TypedDict
+from datetime import datetime
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from langsmith import Client
 from opik import track
 import opik
+from opik import opik_context
 from opik.integrations.langchain import track_langgraph, OpikTracer
 
 client = Client()
@@ -22,35 +24,28 @@ prompt = client.pull_prompt("hwchase17/react")
 from app.core.config import settings
 from app.mcp.tools import APItools
 from app.mcp.memory import MemoryTools
+from app.mcp.social_media_tools import SocialMediaTools
 from app.ai.event_agent import build_event_subgraph, EventAgentState
-from app.ai.opik import opik_tracer
+from app.ai.opik import (
+    opik_tracer,
+    track_agent_call,
+    track_llm_generation,
+    feedback_collector,
+    PerformanceMonitor,
+    ConversationAnalytics,
+    SustainabilityRelevance,
+    CommunityEngagement,
+    ResponseQuality,
+)
+from app.ai.prompts import GREEN_SENTINEL_SYSTEM_PROMPT
+
+# Custom evaluation metrics instances
+sustainability_metric = SustainabilityRelevance()
+engagement_metric = CommunityEngagement()
+quality_metric = ResponseQuality()
 
 # System prompt for AI Green Sentinel
-SYSTEM_PROMPT = (
-    "You are the AI Green Sentinel, the conversational assistant for EcoPulse - "
-    "a community-driven sustainability platform for apartment and residential communities. "
-    "Your role is to help residents with sustainability topics (recycling, composting, energy saving, "
-    "green initiatives) and apartment community services (facilities, staff schedules, community spaces). "
-    "\n\n"
-    "CRITICAL RULES FOR TOOL USAGE:\n"
-    "1. For greetings like 'hi', 'hello', 'hey', asking 'what is your name', 'who are you', or general chitchat: "
-    "DO NOT call ANY tools. Respond directly and immediately.\n"
-    "2. ONLY use tools when you MUST fetch information that is NOT already provided in your context.\n"
-    "3. If user/community context is already in your system prompt, DO NOT call get_user_context or get_community_context.\n"
-    "4. Do NOT make up or hallucinate any details about rooms, facilities, staff, or services.\n"
-    "5. If asked about something you cannot find, politely say you don't have that information.\n"
-    "6. Be concise, friendly, and encourage sustainable living practices.\n"
-    "7. When discussing facilities, reference the actual community spaces and their availability.\n"
-    "8. IF the user wants to CREATE an event, use the 'start_event_creation' tool. "
-    "This will start a specialized workflow that collects all event details step-by-step.\n"
-    "9. IF the user wants to UPDATE an existing event (add tag, change description, etc.), "
-    "use the 'update_event_via_llm' tool with the event_id and the fields to update.\n"
-    "10. CRITICAL: IF the user expresses a need for REAL-WORLD assistance (e.g., picking up food/kids, moving furniture, walking dog, emergency), "
-    "DO NOT give generic advice. IMMEDIATELY use the 'broadcast_neighbor_help' tool to notify neighbors. "
-    "Example: User says 'I need someone to pick up my food', You call 'broadcast_neighbor_help' with 'I need someone to pick up my food order from the gate'.\n"
-    "11. Use the 'web_search' tool to find current information about sustainability, recycling guidelines, "
-    "environmental news, or any topic you don't have direct knowledge of."
-)
+SYSTEM_PROMPT = GREEN_SENTINEL_SYSTEM_PROMPT.prompt
 
 
 class GroqConfigurationError(RuntimeError):
@@ -92,10 +87,9 @@ def get_chat_llm() -> ChatGroq:
     """Return cached Groq LLM instance."""
     return _build_llm()
 
-
 # --- All Tools ---
-# Include all API tools + Memory tools
-ALL_TOOLS = APItools + MemoryTools
+# Include all API tools + Memory tools + Social Media tools
+ALL_TOOLS = APItools + MemoryTools + SocialMediaTools
 
 
 class AgentState(EventAgentState):
@@ -150,35 +144,75 @@ def compile_react_agent_with_persistence(conn, user_id=None):
 
     model = get_chat_llm().bind_tools(ALL_TOOLS)
 
-    @opik.track(name="Groq React Agent Call")
+    @track_agent_call(agent_name="Green Sentinel", agent_type="conversational")
     def call_model(state: AgentState):
+        """Main agent call with comprehensive Opik tracking."""
+        start_time = datetime.now()
         messages = state["messages"]
+        
         if not messages or not isinstance(messages[0], SystemMessage):
             full_messages = [SystemMessage(content=dynamic_system_prompt), *messages]
         else:
-            # If the first message is system, make sure it is OUR dynamic prompt
-            # But the state persistence might load the OLD prompt if we are resuming?
-            # Actually, standard pattern is to prepend system prompt if not present, but 
-            # if we resume a thread, the history has messages.
-            # ReAct agent usually treats the system prompt as ephemeral or part of the run.
-            # We will force the first message to be our dynamic prompt if it's a SystemMessage, or insert it.
-            
             if isinstance(messages[0], SystemMessage):
-                 # Replace the existing system prompt with the fresh one (in case context changed)
                 full_messages = [SystemMessage(content=dynamic_system_prompt)] + messages[1:]
             else:
                 full_messages = [SystemMessage(content=dynamic_system_prompt)] + messages
 
-        metadata = {}
+        metadata = {
+            "agent": "Green Sentinel",
+            "model": "groq/openai-gpt-oss-20b",
+            "timestamp": datetime.now().isoformat(),
+            "message_count": len(messages),
+            "task_type": "conversational_response"
+        }
         thread_id = state.get("thread_id")
         if thread_id:
             metadata["thread_id"] = thread_id
 
-        invoke_config = {"callbacks": [opik_tracer]}
-        if metadata:
-            invoke_config["metadata"] = metadata
+        invoke_config = {"callbacks": [opik_tracer], "metadata": metadata}
 
         response = model.invoke(full_messages, config=invoke_config)
+        
+        # Calculate latency and track performance
+        latency_ms = (datetime.now() - start_time).total_seconds() * 1000
+        PerformanceMonitor.record_latency(
+            operation="agent_call",
+            latency_ms=latency_ms,
+            success=True,
+            metadata={"thread_id": thread_id, "message_count": len(messages)}
+        )
+        
+        # Evaluate response quality with custom metrics
+        if hasattr(response, 'content') and response.content:
+            response_text = response.content
+            
+            # Run custom evaluation metrics
+            sustainability_score = sustainability_metric.score(response_text)
+            engagement_score = engagement_metric.score(response_text)
+            quality_scores = quality_metric.score(response_text)
+            
+            # Determine if task was completed based on response
+            has_tool_calls = hasattr(response, 'tool_calls') and response.tool_calls
+            task_completed = not has_tool_calls or any(tc.get("name") in ["create_event_via_llm", "update_event_via_llm"] for tc in (response.tool_calls or []))
+            
+            # Track evaluation results in Opik (metadata only, no auto-feedback)
+            try:
+                opik_context.update_current_trace(
+                    metadata={
+                        "task_completed": task_completed,
+                        "has_tool_calls": has_tool_calls,
+                        "evaluation_metrics": {
+                            "sustainability_relevance": sustainability_score,
+                            "community_engagement": engagement_score,
+                            "response_quality": quality_scores,
+                            "latency_ms": latency_ms
+                        },
+                        "response_length": len(response_text)
+                    }
+                )
+            except Exception as e:
+                print(f"Error updating evaluation metrics: {e}")
+        
         return {"messages": [response]}
 
     def route_step(state: AgentState):
@@ -192,7 +226,156 @@ def compile_react_agent_with_persistence(conn, user_id=None):
             if any(tc["name"] == "start_event_creation" for tc in last.tool_calls):
                 return "event_manager"
             return "tools"
+        
+        # Check if this is a task completion (no tool calls = final response)
+        # Only ask for feedback when task is completed
+        if len(state["messages"]) > 5:  # At least system + user + response
+            # This is a final response to user's request - ask for feedback
+            return "ask_feedback"
+        
         return "end"
+    
+    def ask_feedback_node(state: AgentState):
+        """Ask user for feedback on the AI response."""
+        return {
+            "messages": [
+                HumanMessage(
+                    content="[Feedback UI: Did you find this response helpful? Please rate or provide feedback]"
+                )
+            ]
+        }
+    
+    def handle_feedback_node(state: AgentState):
+        """Handle and record user feedback on AI response with comprehensive Opik tracking."""
+        thread_id = state.get("thread_id")
+        
+        # Record feedback using the enhanced FeedbackCollector
+        try:
+            # Get the last user message (their feedback)
+            feedback_text = ""
+            if state["messages"]:
+                last_msg = state["messages"][-1]
+                if hasattr(last_msg, 'content'):
+                    feedback_text = last_msg.content.lower()
+            
+            # Analyze sentiment from feedback text
+            positive_signals = ["good", "great", "helpful", "thanks", "perfect", "awesome", "excellent", "exactly", "yes"]
+            negative_signals = ["bad", "wrong", "unhelpful", "incorrect", "no", "not helpful", "terrible", "poor"]
+            
+            is_positive = any(signal in feedback_text for signal in positive_signals)
+            is_negative = any(signal in feedback_text for signal in negative_signals)
+            
+            # Record comprehensive feedback after task completion
+            if is_positive:
+                feedback_collector.record_comprehensive_feedback(
+                    thread_id=thread_id or "unknown",
+                    scores={
+                        "helpful": 0.9,
+                        "accurate": 0.85,
+                        "relevant": 0.9,
+                        "actionable": 0.8,
+                        "satisfaction": 0.9
+                    },
+                    overall_comment=f"User positive feedback on task completion: {feedback_text[:150]}"
+                )
+                
+                # Update Opik trace with positive completion feedback
+                try:
+                    opik_context.update_current_trace(
+                        metadata={
+                            "feedback_sentiment": "positive",
+                            "feedback_text": feedback_text[:200],
+                            "task_completion_feedback": True,
+                            "timestamp": datetime.now().isoformat()
+                        },
+                        feedback_scores=[
+                            {"name": "user_satisfaction", "value": 0.9, "reason": "User provided positive feedback"},
+                            {"name": "task_success", "value": 1.0, "reason": "Task completed successfully per user"},
+                            {"name": "response_accuracy", "value": 0.85, "reason": "User confirmed accuracy"},
+                            {"name": "completion_confidence", "value": 0.95, "reason": "High confidence task completion"}
+                        ]
+                    )
+                except Exception as e:
+                    print(f"Error updating positive completion feedback in Opik: {e}")
+                    
+            elif is_negative:
+                feedback_collector.record_comprehensive_feedback(
+                    thread_id=thread_id or "unknown",
+                    scores={
+                        "helpful": 0.2,
+                        "accurate": 0.3,
+                        "relevant": 0.25,
+                        "actionable": 0.2,
+                        "satisfaction": 0.1
+                    },
+                    overall_comment=f"User negative feedback on task: {feedback_text[:150]}"
+                )
+                
+                # Update Opik trace with negative completion feedback
+                try:
+                    opik_context.update_current_trace(
+                        metadata={
+                            "feedback_sentiment": "negative",
+                            "feedback_text": feedback_text[:200],
+                            "task_completion_feedback": True,
+                            "needs_improvement": True,
+                            "timestamp": datetime.now().isoformat()
+                        },
+                        feedback_scores=[
+                            {"name": "user_satisfaction", "value": 0.1, "reason": "User provided negative feedback"},
+                            {"name": "task_success", "value": 0.2, "reason": "Task failed per user assessment"},
+                            {"name": "response_accuracy", "value": 0.25, "reason": "User reported inaccuracy"},
+                            {"name": "completion_confidence", "value": 0.15, "reason": "Low confidence in task completion"}
+                        ]
+                    )
+                except Exception as e:
+                    print(f"Error updating negative completion feedback in Opik: {e}")
+            else:
+                # Neutral feedback
+                feedback_collector.record_feedback(
+                    trace_id=None,
+                    thread_id=thread_id,
+                    feedback_type="helpful",
+                    score=0.5,
+                    reason=f"Neutral user feedback on task: {feedback_text[:150]}"
+                )
+                
+                # Update Opik trace with neutral completion feedback
+                try:
+                    opik_context.update_current_trace(
+                        metadata={
+                            "feedback_sentiment": "neutral",
+                            "feedback_text": feedback_text[:200],
+                            "task_completion_feedback": True,
+                            "timestamp": datetime.now().isoformat()
+                        },
+                        feedback_scores=[
+                            {"name": "user_satisfaction", "value": 0.5, "reason": "User provided neutral feedback"},
+                            {"name": "task_success", "value": 0.6, "reason": "Task partially completed per user"},
+                            {"name": "response_accuracy", "value": 0.55, "reason": "Mixed accuracy feedback"},
+                            {"name": "completion_confidence", "value": 0.5, "reason": "Moderate confidence in task completion"}
+                        ]
+                    )
+                except Exception as e:
+                    print(f"Error updating neutral completion feedback in Opik: {e}")
+            
+            # Track user journey with feedback
+            ConversationAnalytics.track_user_journey(
+                user_id="agent_user",
+                action="task_completion_feedback",
+                context={
+                    "thread_id": thread_id,
+                    "sentiment": "positive" if is_positive else ("negative" if is_negative else "neutral"),
+                    "feedback_length": len(feedback_text),
+                    "timestamp": datetime.now().isoformat(),
+                    "feedback_recorded": True
+                }
+            )
+            
+        except Exception as e:
+            print(f"Error recording feedback: {e}")
+        
+        return {}
 
     # Compile the event subgraph
     event_workflow = build_event_subgraph()
@@ -204,7 +387,8 @@ def compile_react_agent_with_persistence(conn, user_id=None):
             "handle_feedback", 
             "handle_place", 
             "handle_date", 
-            "handle_type"
+            "handle_type",
+            "handle_post_feedback"  # Also interrupt for social media feedback
         ]
     ) 
     event_agent = track_langgraph(event_agent, opik_tracer)
@@ -212,6 +396,8 @@ def compile_react_agent_with_persistence(conn, user_id=None):
     graph = StateGraph(AgentState)
     graph.add_node("llm", call_model)
     graph.add_node("tools", ToolNode(ALL_TOOLS))
+    graph.add_node("ask_feedback", ask_feedback_node)
+    graph.add_node("handle_feedback", handle_feedback_node)
     
     # Add the event subgraph as a node
     graph.add_node("event_manager", event_agent)
@@ -224,11 +410,14 @@ def compile_react_agent_with_persistence(conn, user_id=None):
         {
             "tools": "tools",
             "event_manager": "event_manager",
+            "ask_feedback": "ask_feedback",
             "end": END,
         },
     )
     graph.add_edge("tools", "llm")
-    graph.add_edge("event_manager", END) # After event flow finishes, we end (or loop back to llm?)
+    graph.add_edge("event_manager", END)
+    graph.add_edge("ask_feedback", "handle_feedback")
+    graph.add_edge("handle_feedback", END)
 
     # IMPORTANT: We need to define interrupts for the PARENT graph if the child has them?
     # No, if 'event_agent' is a compiled graph Node, LangGraph handles it.
@@ -257,8 +446,6 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = None
     thread_id: Optional[str] = None
     message: str
-
-    model_config = {"arbitrary_types_allowed": True}
 
 
 # --- Helpers ---
