@@ -8,7 +8,7 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y build-essential \
+    && apt-get install --no-install-recommends -y build-essential ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
@@ -23,6 +23,10 @@ ENV PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt ./

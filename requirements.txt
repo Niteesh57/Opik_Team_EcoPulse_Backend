@@ -45,6 +45,7 @@ googletrans==4.0.2
 opik
 litellm
 opik-optimizer
+av
 # -------------------------
 # MCP
 # -------------------------
