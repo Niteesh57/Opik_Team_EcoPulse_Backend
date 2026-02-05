@@ -34,7 +34,6 @@ RUN python -m pip install --upgrade pip \
     && pip install --no-cache-dir /wheels/*
 
 COPY app ./app
-COPY opik.db ./opik.db
 
 EXPOSE 8000
 
