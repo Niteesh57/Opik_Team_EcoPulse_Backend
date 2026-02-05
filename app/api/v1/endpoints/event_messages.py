@@ -257,50 +257,6 @@ async def websocket_endpoint(
         print(f"WebSocket error: {e}")
         manager.disconnect(websocket, event_id)
 
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
-from typing import Dict, List
-
-
-
-app = FastAPI()
-
-
-
-class ConnectionCallManager:
-    def __init__(self):
-        self.active_connections: Dict[str, List[WebSocket]] = {}
-    async def connect(self, websocket: WebSocket, event_id: str):
-        await websocket.accept()
-        if event_id not in self.active_connections:
-            self.active_connections[event_id] = []
-        self.active_connections[event_id].append(websocket)
-        print(f"New connection to room {event_id}")
-
-    def disconnect(self, websocket: WebSocket, event_id: str):
-        if event_id in self.active_connections:
-            self.active_connections[event_id].remove(websocket)
-
-    async def broadcast(self, data: bytes, event_id: str, sender: WebSocket):
-        if event_id in self.active_connections:
-            for connection in self.active_connections[event_id]:
-                if connection != sender:
-                    await connection.send_bytes(data)
-
-manager = ConnectionCallManager()
-
-
-@app.websocket("/ws/call/{event_id}")
-async def websocket_endpoint(websocket: WebSocket, event_id: str):
-    await manager.connect(websocket, event_id)
-    try:
-        while True:
-            data = await websocket.receive_bytes()
-            await manager.broadcast(data, event_id, sender=websocket)
-    except WebSocketDisconnect:
-        manager.disconnect(websocket, evernt_id)
-
 @router.post("/{event_id}", response_model=EventMessageOut)
 def post_event_message(
     event_id: str,
