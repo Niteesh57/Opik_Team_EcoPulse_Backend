@@ -8,7 +8,7 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y build-essential ffmpeg \
+    && apt-get install --no-install-recommends -y build-essential ffmpeg libpq-dev libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
@@ -25,7 +25,7 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ffmpeg \
+    && apt-get install --no-install-recommends -y ffmpeg libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /wheels /wheels
