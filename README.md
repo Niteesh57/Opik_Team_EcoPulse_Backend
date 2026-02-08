@@ -122,27 +122,25 @@ EcoPulse is built on a **multi-agent system** powered by:
 
 ## 🎬 Live Demo Walkthrough
 
+### Dashboard Overview
+
+![EcoPulse Dashboard](images/1.png)
+*Main dashboard showing community activity, events, and quick access to AI agents*
+
 ### Scenario 1: Community Environmental Concern
 
-**User reports a community environment issue to Green Sentinel:**
+**User engages with Green Sentinel to create a community event:**
 
-![User Interaction](images/3.png)
+![Green Sentinel Event Creation](images/2.png)
+*Green Sentinel Agent guiding the user through event creation workflow*
 
 The agent:
 1. **Understands the concern** - Analyzes the user's input
 2. **Suggests a collaborative solution** - Proposes creating a community event
 3. **Guides event creation** - Walks through logistics step-by-step
-
-**Once the user agrees, the Event Creation Agent takes over:**
-
-![Event Creation Workflow](images/4.png)
-
-The agent:
-1. **Captures the intent** - Extracts event purpose from conversation
-2. **Asks for missing details** - Place, date, time, participants
-3. **Auto-generates description** - AI writes compelling 100-char event summary
-4. **Creates promotional image** - Generates professional poster automatically
-5. **Publishes to community** - Notifies neighbors through intelligent automation
+4. **Auto-generates description** - AI writes compelling event summary
+5. **Creates promotional materials** - Generates professional posters and social media posts
+6. **Publishes to community** - Notifies neighbors through intelligent automation
 
 **The event is now live and visible to the entire neighborhood!**
 
@@ -150,16 +148,21 @@ The agent:
 
 **When a user needs real assistance:**
 
-![Neighbor Help Request](images/5.png)
+![User Help Request](images/3.png)
+*User requesting help from neighbors through the AI agent*
 
 The agent:
 1. **Detects urgency** - Recognizes help request pattern
 2. **Broadcasts to nearest neighbors** - Uses location-based notification
 3. **Matches helpers** - Connects user with available community members
 
-**When someone like Nagi responds:**
+![Neighbors List](images/6.png)
+*Available neighbors in the community who can provide assistance*
 
-![Help Response](images/6.png)
+**When someone responds to the help request:**
+
+![Help Accepted Notification](images/7.png)
+*User receives notification that a neighbor has accepted to help*
 
 The user is **instantly notified** that assistance is on the way, creating a safer and more connected community.
 
@@ -180,10 +183,8 @@ The user is **instantly notified** that assistance is on the way, creating a saf
 - ✅ Multilingual conversation support
 
 ### 📅 Event Manager Agent
-
-**Your Event Planning Co-Pilot**
-
-![Event Manager Features](images/7.png)
+Poster Creation](images/4.png)
+*Event Manager Agent creating professional promotional posters on demand*
 
 - ✅ **Brainstorming Assistant** - Helps ideate event concepts
 - ✅ **Image Generation** - Creates professional promotional posters on demand
@@ -203,6 +204,12 @@ User: "Find sustainable food caterers nearby"
 Agent: [Searches and lists local eco-friendly vendors]
 ```
 
+### 🎙️ Voice Translation Agent
+
+**Breaking Language Barriers in Real-Time**
+
+![Live Voice Translation](images/8.png)
+*Real-time voice-to-voice translation enabling multilingual community conversations
 ### 🎙️ Voice Translation Agent
 
 **Breaking Language Barriers in Real-Time**
@@ -228,11 +235,8 @@ Agent boxes look nice from the outside, but there's **no visibility inside**. We
 - What was the quality of responses?
 - Why did an agent fail or succeed?
 
-Poor outcomes can frustrate users and degrade trust.
-
-**The Solution: Opik Platform**
-
-![Opik Observability](images/opik_dashboard.png)
+Poor ouDashboard](images/10.png)
+*Opik Dashboard providing comprehensive AI observability and metrics*
 
 ### Opik Features We Use
 
@@ -243,13 +247,45 @@ Poor outcomes can frustrate users and degrade trust.
 ✅ **Experiment Tracking** - A/B test different prompts and models  
 ✅ **Conversation Analytics** - Understand user engagement patterns  
 
-📖 [Read the full Opik Integration Guide](OPIK_INTEGRATION_GUIDE.md)
+![Opik Optimization Studio](images/11.png)
+*Opik Optimization Studio running experiments to improve agent performance*
 
----
-
-## 🚀 Features
+![Opik Traces and Spans](images/12.png)
+*Detailed traces, spans, and threads showing the complete execution flow of agent interactions* ResponseQuality  
+### Core Capabilities
 
 - ✅ **Multi-Agent AI System** - LangGraph-powered orchestration with 5 specialized agents
+- ✅ **19 Intelligent Tools** - API, memory, social media, image generation, external integrations
+- ✅ **ReAct Pattern** - Reasoning + Acting loop for intelligent decision-making
+- ✅ **Human-in-the-Loop** - 8 interrupt points for user feedback and refinement
+- ✅ **Real-Time Voice Translation** - WebSocket-based multilingual voice chat
+- ✅ **JWT Authentication** - Secure token-based authentication
+- ✅ **Event Management** - Complete lifecycle from creation to execution
+- ✅ **Neighbor Help System** - Location-based assistance matching
+- ✅ **Social Media Automation** - Auto-generated posts for Twitter, Instagram, LinkedIn
+- ✅ **Image Generation** - AI-created event posters and promotional materials
+- ✅ **Performance Leaderboard** - Gamified community participation tracking
+- ✅ **Full Observability** - Opik integration for AI monitoring and evaluation
+
+### Community Champions Leaderboard
+
+![Community Champions Board](images/5.png)
+*Leaderboard ranking active participants to encourage healthy competition and engagement*
+
+Track and reward the most active community members who organize events, help neighbors, and contribute to sustainability initiatives.
+
+### User Profile Management
+
+![User Profile](images/9.png)
+*Comprehensive user profile with preferences, participation history, and achievements*
+
+Each user has a personalized profile showing:
+- Community membership and roles
+- Events organized and attended
+- Neighbor help contributions
+- Sustainability impact metrics
+- Language preferences
+- Achievement badgesized agents
 - ✅ **19 Intelligent Tools** - API, memory, social media, image generation, external integrations
 - ✅ **ReAct Pattern** - Reasoning + Acting loop for intelligent decision-making
 - ✅ **Human-in-the-Loop** - 8 interrupt points for user feedback and refinement
