@@ -397,3 +397,14 @@ For questions, issues, or feature requests:
 ---
 
 **Let's build connected, sustainable communities together! 🌍🌱**
+
+---
+
+## 🏆 Hackathon & Organizers
+
+This project was built for **Commit To Change: An AI Agents Hackathon**.
+
+- **Mission:** Build AI that turns New Year’s resolutions into real results.
+- **Organizers:** Comet and Encode Club
+
+![Hackathon Organizers](images/image.png)
