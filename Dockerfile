@@ -35,8 +35,7 @@ RUN python -m pip install --upgrade pip \
 
 COPY app ./app
 COPY sql_app.db ./sql_app.db
-COPY sq_app.db-shm ./sq_app.db-shm
-COPY sq_app.db-wal ./sq_app.db-wal
+
 
 EXPOSE 8000
 
