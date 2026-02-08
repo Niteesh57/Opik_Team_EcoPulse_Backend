@@ -4,6 +4,7 @@ from typing import Optional
 import requests
 import base64
 import time
+from app.core.config import settings
 
 def image_request(description: str) -> str:
     """Request image generation from DeAPI.
@@ -28,7 +29,7 @@ def image_request(description: str) -> str:
         "guidance": 0,
         "seed": 12345,
         "loras": [],
-        "webhook_url": "https://896fbd76a3a1.ngrok-free.app/api/v1/webhooks/deapi/image"
+        "webhook_url": settings.WEBHOOK_URL  # Optional: Set if you want DeAPI to call back when done
     }
 
     try:

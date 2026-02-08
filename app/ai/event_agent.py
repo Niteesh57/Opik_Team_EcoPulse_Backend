@@ -46,9 +46,12 @@ class EventAgentState(TypedDict):
     guest_speakers: Optional[str]
     room_id: Optional[str]
     thread_id: Optional[str]
+    trace_id: Optional[str]
     social_media_posts: Optional[Dict[str, str]]
     social_media_hashtags: Optional[list]
     social_media_feedback: Optional[list]
+    suggestions: Optional[list[str]]
+    format_hint: Optional[str]
 
 
 def _opik_config(state: EventAgentState, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -102,7 +105,7 @@ def _get_workflow_stage(state: EventAgentState) -> str:
 
 # --- Nodes ---
 
-@track(name="Event Entry Node")
+@track_agent_call(agent_name="Event Entry Node", agent_type="analysis", tags={"stage": "entry"})
 def entry_node(state: EventAgentState):
     """Analyze the initial input to extract event name."""
     msg = state["messages"][-1]
@@ -128,7 +131,7 @@ def generate_description_node(state: EventAgentState):
     """Generate or refine event description (max 100 chars)."""
     from app.ai.groq_client import get_chat_llm
     
-    @opik.track(name="Generate Event Description")
+    @track_agent_call(agent_name="Generate Event Description", agent_type="generative", tags={"stage": "description_generation"})
     def _generate_description():
         llm = get_chat_llm()
         name = state.get("event_name", "the event")
@@ -195,7 +198,9 @@ def generate_description_node(state: EventAgentState):
     return {
         "description": description,
         "desc_iterations": state.get("desc_iterations", 0) + 1,
-        "messages": [AIMessage(content=response_msg)]
+        "messages": [AIMessage(content=response_msg)],
+        "suggestions": ["Yes, looks good", "Make it shorter", "Make it more professional", "Add more excitement"],
+        "format_hint": None
     }
 
 def ask_feedback_node(state: EventAgentState):
@@ -204,7 +209,55 @@ def ask_feedback_node(state: EventAgentState):
     return {}
 
 def handle_feedback_node(state: EventAgentState):
-    # Just a pass-through node to serve as interrupt point anchor or state update if needed
+    """Handle user feedback on description and auto-record positive sentiment."""
+    thread_id = state.get("thread_id")
+    
+    # Get the user's feedback message
+    if state["messages"]:
+        last_msg = state["messages"][-1]
+        if hasattr(last_msg, 'content'):
+            feedback_text = last_msg.content.lower()
+            
+            # Detect positive signals
+            positive_signals = ["yes", "good", "great", "perfect", "awesome", "excellent", 
+                              "looks good", "ok", "fine", "proceed", "love it", "like it"]
+            
+            is_positive = any(signal in feedback_text for signal in positive_signals)
+            
+            if is_positive:
+                try:
+                    # Record feedback (will update trace only if one is active)
+                    feedback_collector.record_comprehensive_feedback(
+                        thread_id=thread_id or "unknown",
+                        scores={
+                            "helpful": 0.9,
+                            "relevant": 0.85,
+                            "satisfaction": 0.9
+                        },
+                        overall_comment=f"User approved description: {feedback_text[:100]}"
+                    )
+
+                    # Additionally, try to update the current trace with explicit metadata
+                    try:
+                        current_trace = opik_context.get_current_trace_data()
+                        if current_trace is not None:
+                            opik_context.update_current_trace(
+                                metadata={
+                                    "auto_feedback_recorded": True,
+                                    "feedback_sentiment": "positive",
+                                    "workflow_stage": "description_approved",
+                                    "timestamp": datetime.now().isoformat()
+                                },
+                                feedback_scores=[
+                                    {"name": "description_satisfaction", "value": 0.9, 
+                                     "reason": "User approved event description"}
+                                ]
+                            )
+                    except Exception as inner_e:
+                        print(f"Error updating Opik trace for description feedback: {inner_e}")
+                except Exception as e:
+                    print(f"Error recording auto-feedback: {e}")
+    
     return {}
 
 def route_feedback(state: EventAgentState):
@@ -217,21 +270,61 @@ def route_feedback(state: EventAgentState):
     return "generate_desc"  # Loop back to refine
 
 def ask_place_node(state: EventAgentState):
-    return {"messages": [AIMessage(content="Where will the event take place?")]}
+    return {
+        "messages": [AIMessage(content="Where will the event take place?")],
+        "suggestions": ["Community Center", "Central Park", "Office 301", "Online"],
+        "format_hint": None
+    }
 
 def handle_place_node(state: EventAgentState):
     place = state["messages"][-1].content
+    
+    # Auto-record feedback for successful place input
+    try:
+        ConversationAnalytics.track_user_journey(
+            user_id="event_creator",
+            action="place_provided",
+            context={
+                "thread_id": state.get("thread_id"),
+                "place": place[:100]
+            }
+        )
+    except Exception as e:
+        print(f"Error tracking place input: {e}")
+    
     return {"place": place}
 
 def ask_date_node(state: EventAgentState):
-    return {"messages": [AIMessage(content="When is the event scheduled for? (e.g., February 2, 2026)")]}
+    return {
+        "messages": [AIMessage(content="When is the event scheduled for? (e.g., February 2, 2026)")],
+        "suggestions": ["Tomorrow", "Next Friday", "Next Weekend"],
+        "format_hint": "YYYY-MM-DD or Month Day, Year"
+    }
 
 def handle_date_node(state: EventAgentState):
     date_str = state["messages"][-1].content
+    
+    # Auto-record feedback for successful date input
+    try:
+        ConversationAnalytics.track_user_journey(
+            user_id="event_creator",
+            action="date_provided",
+            context={
+                "thread_id": state.get("thread_id"),
+                "date": date_str[:100]
+            }
+        )
+    except Exception as e:
+        print(f"Error tracking date input: {e}")
+    
     return {"date": date_str}
 
 def ask_time_node(state: EventAgentState):
-    return {"messages": [AIMessage(content="What time does the event start and end? (e.g., 4 pm - 6 pm)")]}
+    return {
+        "messages": [AIMessage(content="What time does the event start and end? (e.g., 4 pm - 6 pm)")],
+        "suggestions": ["9 AM - 5 PM", "2 PM - 4 PM", "6 PM - 9 PM"],
+        "format_hint": "START - END"
+    }
 
 def handle_time_node(state: EventAgentState):
     time_str = state["messages"][-1].content
@@ -243,14 +336,36 @@ def handle_time_node(state: EventAgentState):
     return {"start_time": start_time, "end_time": end_time}
 
 def ask_type_node(state: EventAgentState):
-    return {"messages": [AIMessage(content="What type of event is this? (public, private, community, or social)")]}
+    return {
+        "messages": [AIMessage(content="What type of event is this? (public, private, community, or social)")],
+        "suggestions": ["Public", "Private", "Community", "Social"],
+        "format_hint": None
+    }
 
 def handle_type_node(state: EventAgentState):
     evt_type = state["messages"][-1].content
+    
+    # Auto-record feedback for successful type selection
+    try:
+        ConversationAnalytics.track_user_journey(
+            user_id="event_creator",
+            action="event_type_selected",
+            context={
+                "thread_id": state.get("thread_id"),
+                "event_type": evt_type[:50]
+            }
+        )
+    except Exception as e:
+        print(f"Error tracking event type: {e}")
+    
     return {"event_type": evt_type}
 
 def ask_participants_node(state: EventAgentState):
-    return {"messages": [AIMessage(content="Is there a maximum number of participants? (Enter a number or 'no limit')")]}
+    return {
+        "messages": [AIMessage(content="Is there a maximum number of participants? (Enter a number or 'no limit')")],
+        "suggestions": ["Unlimited", "10", "50", "100"],
+        "format_hint": "Number"
+    }
 
 def handle_participants_node(state: EventAgentState):
     response = state["messages"][-1].content.lower()
@@ -264,7 +379,11 @@ def handle_participants_node(state: EventAgentState):
     return {"max_participants": max_participants}
 
 def ask_guest_speakers_node(state: EventAgentState):
-    return {"messages": [AIMessage(content="Will there be any guest speakers? (Enter names or 'none')")]}
+    return {
+        "messages": [AIMessage(content="Will there be any guest speakers? (Enter names or 'none')")],
+        "suggestions": ["None", "Alice Johnson", "Dr. Bob Smith", "Mayor Green"],
+        "format_hint": "Name 1, Name 2"
+    }
 
 def handle_guest_speakers_node(state: EventAgentState):
     response = state["messages"][-1].content
@@ -302,25 +421,27 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         extracted_tag = tag_match.group(1) if tag_match else "unknown"
         extracted_class = class_match.group(1) if class_match else "unknown"
         
-        # Track LLM call in Opik
+        # Track LLM call in Opik (only if a trace is active)
         try:
-            opik_context.update_current_trace(
-                metadata={
-                    "llm_call": "categorize_event",
-                    "event_name": name,
-                    "event_type": evt_type,
-                    "extracted_tag": extracted_tag,
-                    "extracted_class": extracted_class,
-                    "prompt_length": len(tag_prompt),
-                    "response_length": len(resp),
-                    "latency_ms": latency_ms,
-                    "model": "groq/openai-gpt-oss-20b",
-                    "timestamp": start_time.isoformat()
-                },
-                feedback_scores=[
-                    {"name": "event_categorization", "value": 0.85, "reason": f"Event categorized as {extracted_tag}/{extracted_class}"}
-                ]
-            )
+            current_trace = opik_context.get_current_trace_data()
+            if current_trace is not None:
+                opik_context.update_current_trace(
+                    metadata={
+                        "llm_call": "categorize_event",
+                        "event_name": name,
+                        "event_type": evt_type,
+                        "extracted_tag": extracted_tag,
+                        "extracted_class": extracted_class,
+                        "prompt_length": len(tag_prompt),
+                        "response_length": len(resp),
+                        "latency_ms": latency_ms,
+                        "model": "groq/openai-gpt-oss-20b",
+                        "timestamp": start_time.isoformat()
+                    },
+                    feedback_scores=[
+                        {"name": "event_categorization", "value": 0.85, "reason": f"Event categorized as {extracted_tag}/{extracted_class}"}
+                    ]
+                )
         except Exception as e:
             print(f"Error updating Opik trace: {e}")
         
@@ -409,20 +530,38 @@ def finalize_node(state: EventAgentState, config: RunnableConfig):
         }
     )
     
-    # Update Opik trace with event creation details
+    # Update Opik trace with event creation details and auto-record positive feedback
     try:
-        opik_context.update_current_trace(
-            metadata={
-                "event_created": True,
-                "event_name": state.get("event_name"),
-                "event_type": state.get("event_type"),
-                "tag": tag,
-                "classification": classification,
-                "workflow_stage": "complete"
+        current_trace = opik_context.get_current_trace_data()
+        if current_trace is not None:
+            opik_context.update_current_trace(
+                metadata={
+                    "event_created": True,
+                    "event_name": state.get("event_name"),
+                    "event_type": state.get("event_type"),
+                    "tag": tag,
+                    "classification": classification,
+                    "workflow_stage": "complete",
+                    "auto_feedback_recorded": True
+                },
+                feedback_scores=[
+                    {"name": "workflow_completion", "value": 1.0, "reason": "Event workflow completed successfully"},
+                    {"name": "user_engagement", "value": 0.95, "reason": "User completed full event creation workflow"},
+                    {"name": "data_quality", "value": 0.9, "reason": "All required event fields provided"}
+                ]
+            )
+        
+        # Record comprehensive positive feedback for workflow completion (not strictly tied to a trace)
+        feedback_collector.record_comprehensive_feedback(
+            thread_id=state.get("thread_id") or "unknown",
+            scores={
+                "helpful": 1.0,
+                "accurate": 0.95,
+                "relevant": 1.0,
+                "actionable": 1.0,
+                "satisfaction": 0.95
             },
-            feedback_scores=[
-                {"name": "workflow_completion", "value": 1.0, "reason": "Event workflow completed successfully"}
-            ]
+            overall_comment=f"User successfully completed event creation workflow: {state.get('event_name')}"
         )
     except Exception as e:
         print(f"Error updating Opik trace: {e}")

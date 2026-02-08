@@ -413,7 +413,7 @@ async def opik_health_check():
     return {
         "status": "healthy",
         "opik_client": "connected",
-        "project": "EcoPulse-AI-Platform",
+        "project": opik_client.project_name,
         "features": {
             "tracing": True,
             "feedback": True,

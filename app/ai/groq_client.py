@@ -3,19 +3,28 @@ from functools import lru_cache
 from typing import Annotated, Optional, TypedDict
 from datetime import datetime
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from contextlib import nullcontext
+
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_groq import ChatGroq
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.store.postgres import PostgresStore
+from langgraph.store.memory import InMemoryStore
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from psycopg_pool import ConnectionPool
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:
+    ConnectionPool = None  # Handle case where psycopg_pool is not installed/needed
 from pydantic import BaseModel
 from langsmith import Client
 from opik import track
 import opik
 from opik import opik_context
+import sqlite3
+from contextlib import contextmanager
 from opik.integrations.langchain import track_langgraph, OpikTracer
 
 client = Client()
@@ -53,18 +62,37 @@ class GroqConfigurationError(RuntimeError):
 
 
 # --- Connection Pool ---
-_pool: Optional[ConnectionPool] = None
+_pool = None
 
+class SQLitePool:
+    """Simulates a connection pool for SQLite."""
+    def __init__(self, db_path):
+        self.db_path = db_path
+    
+    @contextmanager
+    def connection(self):
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
-def get_connection_pool() -> ConnectionPool:
+def get_connection_pool():
     """Return a lazily-initialized connection pool."""
     global _pool
     if _pool is None:
-        _pool = ConnectionPool(
-            conninfo=settings.DATABASE_URL,
-            max_size=10,
-            kwargs={"autocommit": True},
-        )
+        if settings.DATABASE_URL.startswith("sqlite"):
+            # Extract path from sqlite:///./sql_app.db -> ./sql_app.db
+            path = settings.DATABASE_URL.replace("sqlite:///", "")
+            _pool = SQLitePool(path)
+        else:
+            if ConnectionPool is None:
+                raise ImportError("psycopg_pool is required for PostgreSQL but not installed.")
+            _pool = ConnectionPool(
+                conninfo=settings.DATABASE_URL,
+                max_size=10,
+                kwargs={"autocommit": True},
+            )
     return _pool
 
 
@@ -102,10 +130,16 @@ def compile_react_agent_with_persistence(conn, user_id=None):
     """Compile a LangGraph agent with PostgreSQL checkpointer and store.
     If user_id is provided, pre-fetch context and inject into system prompt.
     """
-    checkpointer = PostgresSaver(conn)
-    store = PostgresStore(conn)
+    if settings.DATABASE_URL.startswith("sqlite"):
+        checkpointer = SqliteSaver(conn)
+        store = InMemoryStore() # Sqlite persistence for store not yet standard in this setup
+    else:
+        checkpointer = PostgresSaver(conn)
+        store = PostgresStore(conn)
+        
     checkpointer.setup()
-    store.setup()
+    if not isinstance(store, InMemoryStore):
+        store.setup()
 
     # --- Pre-fetch Context if User ID is present ---
     dynamic_system_prompt = SYSTEM_PROMPT
@@ -144,11 +178,67 @@ def compile_react_agent_with_persistence(conn, user_id=None):
 
     model = get_chat_llm().bind_tools(ALL_TOOLS)
 
-    @track_agent_call(agent_name="Green Sentinel", agent_type="conversational")
+    @track_agent_call(agent_name="Green Sentinel", agent_type="conversational", tags={"user_id": user_id})
     def call_model(state: AgentState):
-        """Main agent call with comprehensive Opik tracking."""
+        """Main agent call with comprehensive Opik tracking.
+
+        Also detects explicit user feedback replies and records them without
+        calling the LLM again.
+        """
         start_time = datetime.now()
         messages = state["messages"]
+
+        # Detect if this turn is explicit feedback to a previous
+        # "Was this helpful?" style question from the assistant.
+        # Only treat VERY SHORT or EXPLICIT feedback responses as feedback.
+        # This prevents normal questions from being treated as feedback.
+        try:
+            if messages and isinstance(messages[-1], HumanMessage) and len(messages) >= 2:
+                prev_msg = messages[-2]
+                current_msg = messages[-1]
+                current_text = (current_msg.content or "").lower().strip()
+                
+                # Only treat very short messages (< 20 chars) or explicit sentiment words as feedback
+                # This prevents normal questions from being mistaken for feedback
+                is_short = len(current_text) < 20
+                explicit_feedback = any(word in current_text for word in [
+                    "yes", "no", "good", "bad", "great", "terrible", "helpful", "unhelpful",
+                    "thanks", "excellent", "poor", "perfect", "wrong", "correct", "accurate",
+                    "inaccurate", "true", "false", "like", "dislike", "loved", "hated"
+                ])
+                
+                if hasattr(prev_msg, "content") and isinstance(prev_msg.content, str):
+                    prev_text = prev_msg.content.lower()
+                    feedback_triggers = [
+                        "did this help",
+                        "was this helpful",
+                        "is there anything else you'd like me to adjust",
+                        "should i change anything",
+                        "would you like me to refine",
+                        "was that helpful",
+                    ]
+                    # Only treat as feedback if: previous asked + current is short or has explicit sentiment
+                    if any(trigger in prev_text for trigger in feedback_triggers) and (is_short or explicit_feedback):
+                        # Treat the latest human message as feedback.
+                        # IMPORTANT: Record feedback but DO NOT return early with just an ACK.
+                        # Instead, continue to let the LLM process the message, so the user can ask followup questions
+                        # or provide more context in the same turn.
+                        handle_feedback_node(state)
+                        
+                        # However, if the message was ONLY feedback (very short), we can return an ACK.
+                        # If it was longer (likely contained a new question), we should fall through to the LLM.
+                        if is_short:
+                            ack = AIMessage(
+                                content=(
+                                    "Thanks for your feedback — it really helps us "
+                                    "improve future responses. Is there anything else I can help with?"
+                                )
+                            )
+                            return {"messages": [ack]}
+                        # If it wasn't short, it might be "Yes, but how do I..." -> so we fall through.
+                        
+        except Exception as e:
+            print(f"Error handling explicit feedback turn: {e}")
         
         if not messages or not isinstance(messages[0], SystemMessage):
             full_messages = [SystemMessage(content=dynamic_system_prompt), *messages]
@@ -169,9 +259,25 @@ def compile_react_agent_with_persistence(conn, user_id=None):
         if thread_id:
             metadata["thread_id"] = thread_id
 
+            # Ensure the current Opik trace is linked to this thread
+            try:
+                current_trace = opik_context.get_current_trace_data()
+                if current_trace is not None:
+                    opik_context.update_current_trace(thread_id=thread_id)
+            except Exception:
+                pass
+
         invoke_config = {"callbacks": [opik_tracer], "metadata": metadata}
 
-        response = model.invoke(full_messages, config=invoke_config)
+        # Track LLM generation with proper decorator parameters
+        @track_llm_generation(
+            model_name="openai/gpt-oss-20b",
+            generation_type="chat"
+        )
+        def invoke_llm():
+            return model.invoke(full_messages, config=invoke_config)
+        
+        response = invoke_llm()
         
         # Calculate latency and track performance
         latency_ms = (datetime.now() - start_time).total_seconds() * 1000
@@ -197,21 +303,31 @@ def compile_react_agent_with_persistence(conn, user_id=None):
             
             # Track evaluation results in Opik (metadata only, no auto-feedback)
             try:
-                opik_context.update_current_trace(
-                    metadata={
-                        "task_completed": task_completed,
-                        "has_tool_calls": has_tool_calls,
-                        "evaluation_metrics": {
-                            "sustainability_relevance": sustainability_score,
-                            "community_engagement": engagement_score,
-                            "response_quality": quality_scores,
-                            "latency_ms": latency_ms
-                        },
-                        "response_length": len(response_text)
-                    }
-                )
+                current_trace = opik_context.get_current_trace_data()
+                if current_trace is not None:
+                    opik_context.update_current_trace(
+                        metadata={
+                            "task_completed": task_completed,
+                            "has_tool_calls": has_tool_calls,
+                            "evaluation_metrics": {
+                                "sustainability_relevance": sustainability_score,
+                                "community_engagement": engagement_score,
+                                "response_quality": quality_scores,
+                                "latency_ms": latency_ms
+                            },
+                            "response_length": len(response_text)
+                        }
+                    )
             except Exception as e:
                 print(f"Error updating evaluation metrics: {e}")
+
+        # Persist trace_id for potential future use (e.g., logging)
+        try:
+            current_trace = opik_context.get_current_trace_data()
+            if current_trace is not None and hasattr(current_trace, "id"):
+                state["trace_id"] = getattr(current_trace, "id", None)
+        except Exception:
+            pass
         
         return {"messages": [response]}
 
@@ -226,13 +342,10 @@ def compile_react_agent_with_persistence(conn, user_id=None):
             if any(tc["name"] == "start_event_creation" for tc in last.tool_calls):
                 return "event_manager"
             return "tools"
-        
-        # Check if this is a task completion (no tool calls = final response)
-        # Only ask for feedback when task is completed
-        if len(state["messages"]) > 5:  # At least system + user + response
-            # This is a final response to user's request - ask for feedback
-            return "ask_feedback"
-        
+
+        # No tool calls: this is a normal conversational response.
+        # The system prompt asks the model to request feedback in natural
+        # language; explicit feedback replies are handled inside call_model.
         return "end"
     
     def ask_feedback_node(state: AgentState):
@@ -248,7 +361,7 @@ def compile_react_agent_with_persistence(conn, user_id=None):
     def handle_feedback_node(state: AgentState):
         """Handle and record user feedback on AI response with comprehensive Opik tracking."""
         thread_id = state.get("thread_id")
-        
+
         # Record feedback using the enhanced FeedbackCollector
         try:
             # Get the last user message (their feedback)
@@ -279,22 +392,24 @@ def compile_react_agent_with_persistence(conn, user_id=None):
                     overall_comment=f"User positive feedback on task completion: {feedback_text[:150]}"
                 )
                 
-                # Update Opik trace with positive completion feedback
+                # Update Opik trace with positive completion feedback (if a trace is active)
                 try:
-                    opik_context.update_current_trace(
-                        metadata={
-                            "feedback_sentiment": "positive",
-                            "feedback_text": feedback_text[:200],
-                            "task_completion_feedback": True,
-                            "timestamp": datetime.now().isoformat()
-                        },
-                        feedback_scores=[
-                            {"name": "user_satisfaction", "value": 0.9, "reason": "User provided positive feedback"},
-                            {"name": "task_success", "value": 1.0, "reason": "Task completed successfully per user"},
-                            {"name": "response_accuracy", "value": 0.85, "reason": "User confirmed accuracy"},
-                            {"name": "completion_confidence", "value": 0.95, "reason": "High confidence task completion"}
-                        ]
-                    )
+                    current_trace = opik_context.get_current_trace_data()
+                    if current_trace is not None:
+                        opik_context.update_current_trace(
+                            metadata={
+                                "feedback_sentiment": "positive",
+                                "feedback_text": feedback_text[:200],
+                                "task_completion_feedback": True,
+                                "timestamp": datetime.now().isoformat()
+                            },
+                            feedback_scores=[
+                                {"name": "user_satisfaction", "value": 0.9, "reason": "User provided positive feedback"},
+                                {"name": "task_success", "value": 1.0, "reason": "Task completed successfully per user"},
+                                {"name": "response_accuracy", "value": 0.85, "reason": "User confirmed accuracy"},
+                                {"name": "completion_confidence", "value": 0.95, "reason": "High confidence task completion"}
+                            ]
+                        )
                 except Exception as e:
                     print(f"Error updating positive completion feedback in Opik: {e}")
                     
@@ -311,23 +426,25 @@ def compile_react_agent_with_persistence(conn, user_id=None):
                     overall_comment=f"User negative feedback on task: {feedback_text[:150]}"
                 )
                 
-                # Update Opik trace with negative completion feedback
+                # Update Opik trace with negative completion feedback (if a trace is active)
                 try:
-                    opik_context.update_current_trace(
-                        metadata={
-                            "feedback_sentiment": "negative",
-                            "feedback_text": feedback_text[:200],
-                            "task_completion_feedback": True,
-                            "needs_improvement": True,
-                            "timestamp": datetime.now().isoformat()
-                        },
-                        feedback_scores=[
-                            {"name": "user_satisfaction", "value": 0.1, "reason": "User provided negative feedback"},
-                            {"name": "task_success", "value": 0.2, "reason": "Task failed per user assessment"},
-                            {"name": "response_accuracy", "value": 0.25, "reason": "User reported inaccuracy"},
-                            {"name": "completion_confidence", "value": 0.15, "reason": "Low confidence in task completion"}
-                        ]
-                    )
+                    current_trace = opik_context.get_current_trace_data()
+                    if current_trace is not None:
+                        opik_context.update_current_trace(
+                            metadata={
+                                "feedback_sentiment": "negative",
+                                "feedback_text": feedback_text[:200],
+                                "task_completion_feedback": True,
+                                "needs_improvement": True,
+                                "timestamp": datetime.now().isoformat()
+                            },
+                            feedback_scores=[
+                                {"name": "user_satisfaction", "value": 0.1, "reason": "User provided negative feedback"},
+                                {"name": "task_success", "value": 0.2, "reason": "Task failed per user assessment"},
+                                {"name": "response_accuracy", "value": 0.25, "reason": "User reported inaccuracy"},
+                                {"name": "completion_confidence", "value": 0.15, "reason": "Low confidence in task completion"}
+                            ]
+                        )
                 except Exception as e:
                     print(f"Error updating negative completion feedback in Opik: {e}")
             else:
@@ -340,22 +457,24 @@ def compile_react_agent_with_persistence(conn, user_id=None):
                     reason=f"Neutral user feedback on task: {feedback_text[:150]}"
                 )
                 
-                # Update Opik trace with neutral completion feedback
+                # Update Opik trace with neutral completion feedback (if a trace is active)
                 try:
-                    opik_context.update_current_trace(
-                        metadata={
-                            "feedback_sentiment": "neutral",
-                            "feedback_text": feedback_text[:200],
-                            "task_completion_feedback": True,
-                            "timestamp": datetime.now().isoformat()
-                        },
-                        feedback_scores=[
-                            {"name": "user_satisfaction", "value": 0.5, "reason": "User provided neutral feedback"},
-                            {"name": "task_success", "value": 0.6, "reason": "Task partially completed per user"},
-                            {"name": "response_accuracy", "value": 0.55, "reason": "Mixed accuracy feedback"},
-                            {"name": "completion_confidence", "value": 0.5, "reason": "Moderate confidence in task completion"}
-                        ]
-                    )
+                    current_trace = opik_context.get_current_trace_data()
+                    if current_trace is not None:
+                        opik_context.update_current_trace(
+                            metadata={
+                                "feedback_sentiment": "neutral",
+                                "feedback_text": feedback_text[:200],
+                                "task_completion_feedback": True,
+                                "timestamp": datetime.now().isoformat()
+                            },
+                            feedback_scores=[
+                                {"name": "user_satisfaction", "value": 0.5, "reason": "User provided neutral feedback"},
+                                {"name": "task_success", "value": 0.6, "reason": "Task partially completed per user"},
+                                {"name": "response_accuracy", "value": 0.55, "reason": "Mixed accuracy feedback"},
+                                {"name": "completion_confidence", "value": 0.5, "reason": "Moderate confidence in task completion"}
+                            ]
+                        )
                 except Exception as e:
                     print(f"Error updating neutral completion feedback in Opik: {e}")
             

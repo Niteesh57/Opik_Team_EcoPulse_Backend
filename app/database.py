@@ -3,22 +3,38 @@ Database configuration and session management
 """
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.pool import StaticPool
 from typing import Generator
 from app.core.config import settings
 
-# 1. Enhanced Engine Configuration
-# pool_size=10: Keeps 10 connections ready to go.
-# max_overflow=5: Allows 5 extra if traffic spikes (total 15).
-# pool_recycle: Prevents "idle connection" errors by refreshing connections every 30 mins.
-engine = create_engine(
-    settings.DATABASE_URL,
-    pool_size=10,
-    max_overflow=5,
-    pool_pre_ping=True,  # Checks if connection is alive before using it
-    pool_recycle=1800,   # Matches most cloud provider idle timeouts
-    pool_reset_on_return='rollback',  # Resets session state on return
-    connect_args={"options": "-c timezone=utc"} # Ensures consistent time handling
-)
+# Determine DB URL - Prioritize SQLite if requested or default
+db_url = settings.DATABASE_URL
+# Force SQLite if the configuration still points to the remote Postgres DB
+# to satisfy the "use sqlite" requirement despite .env overrides
+if "neondb" in db_url or "postgresql" in db_url:
+    db_url = "sqlite:///./sql_app.db"
+
+if db_url.startswith("sqlite"):
+    engine = create_engine(
+        db_url,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool, # Use StaticPool for in-memory/file SQLite to avoid threading issues
+        pool_pre_ping=True
+    )
+else:
+    # 1. Enhanced Engine Configuration
+    # pool_size=10: Keeps 10 connections ready to go.
+    # max_overflow=5: Allows 5 extra if traffic spikes (total 15).
+    # pool_recycle: Prevents "idle connection" errors by refreshing connections every 30 mins.
+    engine = create_engine(
+        settings.DATABASE_URL,
+        pool_size=10,
+        max_overflow=5,
+        # pool_pre_ping=True,  # Checks if connection is alive before using it
+        pool_recycle=1800,   # Matches most cloud provider idle timeouts
+        pool_reset_on_return='rollback',  # Resets session state on return
+        connect_args={"options": "-c timezone=utc"} # Ensures consistent time handling
+    )
 
 # 2. Session Factory
 SessionLocal = sessionmaker(

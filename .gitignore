@@ -20,7 +20,6 @@ logs/
 *.log
 
 # SQLite databases and local data
-*.db
 *.sqlite3
 
 # Environment files
@@ -45,3 +44,5 @@ node_modules/
 # Misc
 *.swp
 *.swo
+
+migrations

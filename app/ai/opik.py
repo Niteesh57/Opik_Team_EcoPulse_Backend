@@ -20,6 +20,8 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 import json
 from functools import wraps
+from contextlib import contextmanager
+from app.core.config import settings
 
 # =============================================================================
 # OPIK CLIENT CONFIGURATION
@@ -27,12 +29,13 @@ from functools import wraps
 
 # Initialize Opik client with project configuration
 opik_client = Opik(
-    project_name="EcoPulse-AI-Platform",
+    project_name=settings.OPIK_PROJECT_NAME or "EcoPulse-AI-Platform",
+    workspace=settings.OPIK_WORKSPACE or "default",
 )
 
 # Global tracer instance with project binding
 opik_tracer = OpikTracer(
-    project_name="EcoPulse-AI-Platform",
+    project_name=settings.OPIK_PROJECT_NAME or "EcoPulse-AI-Platform",
     tags=["production", "langgraph", "multi-agent"]
 )
 
@@ -114,7 +117,8 @@ def track_agent_call(
     agent_name: str,
     agent_type: str = "conversational",
     capture_input: bool = True,
-    capture_output: bool = True
+    capture_output: bool = True,
+    tags: Optional[Dict[str, str]] = None
 ):
     """
     Decorator for tracking agent calls with comprehensive metadata.
@@ -124,6 +128,7 @@ def track_agent_call(
         agent_type: Type of agent (conversational, task, workflow)
         capture_input: Whether to capture input in trace
         capture_output: Whether to capture output in trace
+        tags: Optional[Dict[str, str]] = None
     """
     def decorator(func):
         @wraps(func)
@@ -140,7 +145,7 @@ def track_agent_call(
                         "timestamp": start_time.isoformat(),
                         "platform": "EcoPulse"
                     },
-                    tags=[agent_name.lower().replace(" ", "-"), agent_type, "agent-call"]
+                    tags=[agent_name.lower().replace(" ", "-"), agent_type, "agent-call"] + ([str(v) for v in tags.values()] if tags else [])
                 )
             except Exception:
                 pass
@@ -316,19 +321,22 @@ class FeedbackCollector:
             "timestamp": datetime.now().isoformat()
         }
         
-        # Update Opik trace with feedback
+        # Update Opik trace with feedback (only if a trace is active)
         try:
-            opik_context.update_current_trace(
-                feedback_scores=[{
-                    "name": feedback_type,
-                    "value": score,
-                    "reason": reason or f"User feedback: {feedback_type}"
-                }],
-                metadata={
-                    "feedback_recorded": True,
-                    "feedback_data": feedback_data
-                }
-            )
+            current_trace = opik_context.get_current_trace_data()
+            if current_trace is not None:
+                opik_context.update_current_trace(
+                    thread_id=thread_id,
+                    feedback_scores=[{
+                        "name": feedback_type,
+                        "value": score,
+                        "reason": reason or f"User feedback: {feedback_type}"
+                    }],
+                    metadata={
+                        "feedback_recorded": True,
+                        "feedback_data": feedback_data
+                    }
+                )
         except Exception as e:
             print(f"Error recording feedback to Opik: {e}")
         
@@ -362,17 +370,21 @@ class FeedbackCollector:
                     "reason": f"Multi-dimensional feedback: {feedback_type}"
                 })
         
+        # Only attempt to update trace if one is active
         try:
-            opik_context.update_current_trace(
-                feedback_scores=feedback_scores,
-                metadata={
-                    "comprehensive_feedback": True,
-                    "overall_comment": overall_comment,
-                    "user_id": user_id,
-                    "thread_id": thread_id,
-                    "feedback_count": len(feedback_scores)
-                }
-            )
+            current_trace = opik_context.get_current_trace_data()
+            if current_trace is not None:
+                opik_context.update_current_trace(
+                    thread_id=thread_id,
+                    feedback_scores=feedback_scores,
+                    metadata={
+                        "comprehensive_feedback": True,
+                        "overall_comment": overall_comment,
+                        "user_id": user_id,
+                        "thread_id": thread_id,
+                        "feedback_count": len(feedback_scores)
+                    }
+                )
         except Exception as e:
             print(f"Error recording comprehensive feedback: {e}")
         
@@ -526,14 +538,16 @@ class ConversationAnalytics:
         if ai_lengths:
             analysis["avg_ai_message_length"] = sum(ai_lengths) // len(ai_lengths)
         
-        # Update Opik with analytics
+        # Update Opik with analytics only when a trace is active
         try:
-            opik_context.update_current_trace(
-                metadata={
-                    "conversation_analytics": analysis,
-                    "analyzed_at": datetime.now().isoformat()
-                }
-            )
+            current_trace = opik_context.get_current_trace_data()
+            if current_trace is not None:
+                opik_context.update_current_trace(
+                    metadata={
+                        "conversation_analytics": analysis,
+                        "analyzed_at": datetime.now().isoformat()
+                    }
+                )
         except Exception:
             pass
         
@@ -620,12 +634,14 @@ class PerformanceMonitor:
         }
         
         try:
-            opik_context.update_current_trace(
-                metadata={
-                    "token_usage": usage_data,
-                    "cost_tracking": True
-                }
-            )
+            current_trace = opik_context.get_current_trace_data()
+            if current_trace is not None:
+                opik_context.update_current_trace(
+                    metadata={
+                        "token_usage": usage_data,
+                        "cost_tracking": True
+                    }
+                )
         except Exception:
             pass
         
@@ -646,15 +662,44 @@ def create_span_context(
     span_type: str = "general",
     metadata: Optional[Dict] = None
 ):
-    """Create a context manager for manual span creation."""
-    return opik_context.span(
-        name=name,
-        metadata={
-            "span_type": span_type,
-            "created_at": datetime.now().isoformat(),
-            **(metadata or {})
-        }
-    )
+    """Create a context manager for manual span creation.
+
+    Opik's SDK does not expose a `span()` context helper in `opik_context`.
+    This helper is a defensive context manager: if a current span exists it
+    will annotate it on entry and on exit; otherwise it is a no-op.
+    """
+    @contextmanager
+    def _ctx():
+        try:
+            current_span = opik_context.get_current_span_data()
+            if current_span is not None:
+                opik_context.update_current_span(
+                    name=name,
+                    metadata={
+                        "span_type": span_type,
+                        "created_at": datetime.now().isoformat(),
+                        **(metadata or {}),
+                    }
+                )
+        except Exception:
+            pass
+
+        try:
+            yield
+        finally:
+            try:
+                current_span = opik_context.get_current_span_data()
+                if current_span is not None:
+                    opik_context.update_current_span(
+                        metadata={
+                            "span_closed": True,
+                            "closed_at": datetime.now().isoformat(),
+                        }
+                    )
+            except Exception:
+                pass
+
+    return _ctx()
 
 
 # =============================================================================

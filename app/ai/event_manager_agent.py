@@ -27,7 +27,16 @@ class EventAgentState(TypedDict):
 
 def get_event_manager_agent(conn):
     """Compile the Event Manager Agent with persistence."""
-    checkpointer = PostgresSaver(conn)
+    from app.core.config import settings
+    # We need to import the savers specifically for SQLite vs Postgres
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    if settings.DATABASE_URL.startswith("sqlite"):
+        checkpointer = SqliteSaver(conn)
+    else:
+        checkpointer = PostgresSaver(conn)
+        
     checkpointer.setup()
 
     llm = _build_llm()

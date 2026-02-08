@@ -121,3 +121,15 @@ async def check_image_status(request_id: str):
             "has_image": bool(event.event_image_url),
             "image_url": event.event_image_url
         }
+
+@router.get("/alert")
+async def opik():
+    try:
+        print("Received alert webhook")
+        return {
+            "output": {"message": "Alert received successfully!"},  # You can customize this response as needed 
+        }
+    except Exception as e:
+        return {
+            "output": {"error": str(e)},
+        }

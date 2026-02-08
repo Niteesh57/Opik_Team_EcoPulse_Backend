@@ -14,11 +14,12 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "YOUR-SECRET-KEY-CHANGE-THIS-IN-PRODUCTION"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 90
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Database
-    DATABASE_URL: str = "postgresql://neondb_owner:npg_yFP0mE9xcitg@ep-damp-band-ah1lndo4-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require"
+    # DATABASE_URL: str = "postgresql://neondb_owner:npg_yFP0mE9xcitg@ep-damp-band-ah1lndo4-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require"
+    DATABASE_URL: str = "sqlite:///./sql_app.db"
     
     # CORS
     BACKEND_CORS_ORIGINS: list = ["*"]
@@ -27,11 +28,14 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
+    WEBHOOK_URL: Optional[str] = None
+
     GROQ_API_KEY: Optional[str] = None
     TAVILY_API_KEY: Optional[str] = None
     DEAPI_TOKEN: Optional[str] = None
     IMGBB_API_KEY: Optional[str] = None
     XPOZ_API_KEY: Optional[str] = None
+    ELEVEN_API_KEY: Optional[str] = None
 
     OPIK_URL_OVERRIDE: Optional[str] = None
     OPIK_WORKSPACE: Optional[str] = None

@@ -567,12 +567,19 @@ async def stream_chat(
                                 assistant_msg = None
 
                             # Notify client to submit user input for the expected field
-                            yield format_sse_payload({
+                            payload_data = {
                                 "event": "wait_for_user",
                                 "expected": expected,
                                 "question": content,
                                 "session_id": session_id_value,
-                            })
+                            }
+                            # Add suggestions if available
+                            if state and state.get("suggestions"):
+                                payload_data["suggestions"] = state.get("suggestions")
+                            if state and state.get("format_hint"):
+                                payload_data["format_hint"] = state.get("format_hint")
+
+                            yield format_sse_payload(payload_data)
 
                             # Stop streaming—frontend should submit user's reply as a new /stream call with the same thread_id
                             return
@@ -641,12 +648,19 @@ async def stream_chat(
                                         yield format_sse_payload({"delta": sanitized})
                                 
                                 # Notify that we're waiting for user input
-                                yield format_sse_payload({
+                                payload_data = {
                                     "event": "wait_for_user",
                                     "expected": "user_response",
                                     "question": content,
                                     "session_id": session_id_value,
-                                })
+                                }
+                                # Add suggestions from snapshot
+                                if snapshot.values and snapshot.values.get("suggestions"):
+                                    payload_data["suggestions"] = snapshot.values.get("suggestions")
+                                if snapshot.values and snapshot.values.get("format_hint"):
+                                    payload_data["format_hint"] = snapshot.values.get("format_hint")
+
+                                yield format_sse_payload(payload_data)
                                 return
                 except Exception:
                     # If we can't get state, just continue with normal completion
