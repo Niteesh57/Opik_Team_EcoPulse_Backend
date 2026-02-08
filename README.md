@@ -277,15 +277,10 @@ Track and reward the most active community members who organize events, help nei
 ### User Profile Management
 
 ![User Profile](images/9.png)
-*Comprehensive user profile with preferences, participation history, and achievements*
+*Comprehensive user profile with preferences*
 
 Each user has a personalized profile showing:
-- Community membership and roles
-- Events organized and attended
-- Neighbor help contributions
-- Sustainability impact metrics
 - Language preferences
-- Achievement badgesized agents
 - ✅ **19 Intelligent Tools** - API, memory, social media, image generation, external integrations
 - ✅ **ReAct Pattern** - Reasoning + Acting loop for intelligent decision-making
 - ✅ **Human-in-the-Loop** - 8 interrupt points for user feedback and refinement
