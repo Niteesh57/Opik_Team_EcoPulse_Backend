@@ -139,8 +139,7 @@ The agent:
 2. **Suggests a collaborative solution** - Proposes creating a community event
 3. **Guides event creation** - Walks through logistics step-by-step
 4. **Auto-generates description** - AI writes compelling event summary
-5. **Creates promotional materials** - Generates professional posters and social media posts
-6. **Publishes to community** - Notifies neighbors through intelligent automation
+5. **Publishes to community** - Notifies neighbors through intelligent automation
 
 **The event is now live and visible to the entire neighborhood!**
 
@@ -153,7 +152,7 @@ The agent:
 
 The agent:
 1. **Detects urgency** - Recognizes help request pattern
-2. **Broadcasts to nearest neighbors** - Uses location-based notification
+2. **Broadcasts to nearest neighbors** - connected member will get notification
 3. **Matches helpers** - Connects user with available community members
 
 ![Neighbors List](images/6.png)
@@ -162,6 +161,7 @@ The agent:
 **When someone responds to the help request:**
 
 ![Help Accepted Notification](images/7.png)
+
 *User receives notification that a neighbor has accepted to help*
 
 The user is **instantly notified** that assistance is on the way, creating a safer and more connected community.
@@ -235,7 +235,7 @@ Agent boxes look nice from the outside, but there's **no visibility inside**. We
 - What was the quality of responses?
 - Why did an agent fail or succeed?
 
-Poor ouDashboard](images/10.png)
+![Dashboard](images/image.png)
 *Opik Dashboard providing comprehensive AI observability and metrics*
 
 ### Opik Features We Use
@@ -247,7 +247,7 @@ Poor ouDashboard](images/10.png)
 ✅ **Experiment Tracking** - A/B test different prompts and models  
 ✅ **Conversation Analytics** - Understand user engagement patterns  
 
-![Opik Optimization Studio](images/11.png)
+![Opik Optimization Studio](images/10.png)
 *Opik Optimization Studio running experiments to improve agent performance*
 
 ![Opik Traces and Spans](images/12.png)
