@@ -235,7 +235,7 @@ Agent boxes look nice from the outside, but there's **no visibility inside**. We
 - What was the quality of responses?
 - Why did an agent fail or succeed?
 
-![Dashboard](images/image.png)
+![Dashboard](images/10.png)
 *Opik Dashboard providing comprehensive AI observability and metrics*
 
 ### Opik Features We Use
@@ -247,7 +247,7 @@ Agent boxes look nice from the outside, but there's **no visibility inside**. We
 ✅ **Experiment Tracking** - A/B test different prompts and models  
 ✅ **Conversation Analytics** - Understand user engagement patterns  
 
-![Opik Optimization Studio](images/10.png)
+![Opik Optimization Studio](images/11.png)
 *Opik Optimization Studio running experiments to improve agent performance*
 
 ![Opik Traces and Spans](images/12.png)
