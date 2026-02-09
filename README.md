@@ -1,4 +1,4 @@
-# EcoPulse - AI-Powered Community Engagement Platform
+# EcoPulse AI: Smart Community Communication & Environmental Action (AI-Powered Community Engagement Platform)
 
 **Transforming New Year's Resolutions into Real-World Community Actions**
 
